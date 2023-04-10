@@ -1,0 +1,10 @@
+cellpose
+collections
+pandas
+geopandas
+imagej
+jpype
+matplotlib
+numpy
+scyjava
+seaborn
