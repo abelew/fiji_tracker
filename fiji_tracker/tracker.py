@@ -1,161 +1,41 @@
-def separate_slices(
-    input_file,
-    wanted_x=True,
-    wanted_y=True,
-    wanted_z=1,
-    wanted_channel=2,
-    cpus=8,
-    overwrite=False,
-):
-    """Slice an image in preparation for cellpose.
-
-    Eventually this should be smart enough to handle arbitrary
-    x,y,z,channels,times as well as able to use multiple cpus for
-    saving the data.  In its current implementation, it only saves 1
-    z, 1 channel for every frame of an image into a series of files in
-    its output directory.
-    """
-
-    input_base = os.path.basename(input_file)
-    input_dir = os.path.dirname(input_file)
-    input_name = os.path.splitext(input_base)[0]
-    output_directory = Path(f"{input_dir}/outputs/{input_name}_z{wanted_z}").as_posix()
-    os.makedirs(output_directory, exist_ok=True)
-    if verbose:
-        print("Starting to open the input file, this takes a moment.")
-    raw_dataset = ij.io().open(input_file)
-    if verbose:
-        print(f"Opened input file, writing images to {output_directory}")
-
-    data_info = {}
-    for element in range(len(raw_dataset.dims)):
-        name = raw_dataset.dims[element]
-        data_info[name] = raw_dataset.shape[element]
-    if verbose:
-        print(
-            f"This dataset has dimensions: X:{data_info['X']}",
-            f"Y:{data_info['Y']} Z:{data_info['Z']} Time:{data_info['Time']}",
-        )
-
-    slices = []
-    for timepoint in range(data_info['Time']):
-        wanted_slice = raw_dataset[:, :, wanted_channel, wanted_z, timepoint]
-        slice_data = ij.py.to_dataset(wanted_slice)
-        output_filename = Path(f"{output_directory}/frame_{timepoint}.tif").as_posix()
-        if os.path.exists(output_filename):
-            if overwrite:
-                print(f"Rewriting {output_filename}")
-                os.remove(output_filename)
-                saved = ij.io().save(slice_data, output_filename)
-            else:
-                if verbose:
-                    print(f"Skipping {output_filename}, it already exists.")
-        else:
-            saved = ij.io().save(slice_data, output_filename)
-            if verbose:
-                print(f"Saving image {input_name}_{timepoint}.")
-        slices.append(wanted_slice)
-
-    return raw_dataset, slices, output_directory
+from cellpose import models, io
+from cellpose.io import *
+from collections import defaultdict
+import geopandas
+import glob
+import imagej
+from jpype import JArray, JInt
+import matplotlib.pyplot as plt
+import multiprocessing as mp
+import numpy as np
+import os
+import pandas
+from pandas import DataFrame
+from pathlib import Path
+import scyjava
+import seaborn
+import shutil
 
 
-## Relevant options:
-## batch_size(increase for more parallelization), channels(two element list of two element
-## channels to segment; the first is the segment, second is optional nucleus;
-## internal elements are color channels to query, so [[0,0],[2,3]] means do main cells in
-## grayscale and a second with cells in blue, nuclei in green.
-## channel_axis, z_axis ? invert (T/F flip pixels from b/w I assume),
-## normalize(T/F percentile normalize the data), diameter, do_3d,
-## anisotropy (rescaling factor for 3d segmentation), net_avg (average models),
-## augment ?, tile ?, resample, interp, flow_threshold, cellprob_threshold (interesting),
-## min_size (turned off with -1), stitch_threshold ?, rescale ?.
-def invoke_cellpose(
-    input_directory,
-    model_file,
-    channels=[[0, 0]],
-    diameter=160,
-    threshold=0.4,
-    do_3D=False,
-    batch_size=64,
-    verbose=True,
-):
-    """Invoke cellpose using individual slices.
-
-    This takes the series of slices from separate_slices() and sends
-    them to cellpose with a specific model.  The dictionary it returns
-    is the primary datastructure for the various functions which follow.
-    """
-
-    ## Relevant options:
-    ## model_type(cyto, nuclei, cyto2), net_avg(T/F if load built in networks and average them)
-    model = models.CellposeModel(pretrained_model=model_file)
-    files = get_image_files(input_directory, '_masks', look_one_level_down=False)
-    imgs = []
-    output_masks = []
-    output_txts = []
-    output_files = defaultdict(dict)
-    existing_files = 0
-    count = 0
-    for one_file in files:
-        print(f"Reading {one_file}")
-        cp_output_directory = os.path.dirname(input_directory)
-        cp_output_directory = Path(f"{cp_output_directory}/cellpose").as_posix()
-        f_name = os.path.basename(one_file)
-        f_name = os.path.splitext(f_name)[0]
-        output_mask = Path(f"{cp_output_directory}/{f_name}_cp_masks.png").as_posix()
-        output_txt = Path(f"{cp_output_directory}/{f_name}_cp_outlines.txt").as_posix()
-        print(f"Adding new txt file: {output_txt}")
-        output_files[f_name]['input_file'] = one_file
-        output_files[f_name]['output_mask'] = output_mask
-        output_files[f_name]['output_txt'] = output_txt
-        output_files[f_name]['exists'] = False
-        if os.path.exists(output_txt):
-            existing_files = existing_files + 1
-            output_files[f_name]['exists'] = True
-        else:
-            img = imread(f)
-            imgs.append(img)
-        if count == 0:
-            os.makedirs(cp_output_directory, exist_ok=True)
-        count = count + 1
-    nimg = len(imgs)
-    if verbose and nimg > 0:
-        print(f"Read {nimg} images, starting cellpose.")
-        masks, flows, styles = model.eval(
-            imgs,
-            diameter=diameter,
-            channels=channels,
-            flow_threshold=threshold,
-            do_3D=do_3D,
-            batch_size=batch_size,
-        )
-        io.save_to_png(imgs, masks, flows, files)
-    else:
-        print("Returning the output files.")
-    return output_files
-
-
-def collapse_z(raw_dataset, cellpose_result, method='sum'):
+def collapse_z(raw_dataset, output_files, method='sum'):
     """Stack multiple z slices for each timepoint.
 
     If I understand Jacques' explanation of the quantification methods
     correctly, they sometimes (often?) perform better on the
     z-integration of pixels at each timepoint.  This function performs
     that and sends the stacked slices to the output directory and adds
-    the filenames to the cellpose_result dictionary.
+    the filenames to the output_files dictionary.
     """
-    cellpose_slices = list(cellpose_result.keys())
+    cellpose_slices = list(output_files.keys())
     slice_number = 0
     collapsed_slices = []
     for slice_name in cellpose_slices:
-        output_directory = os.path.dirname(cellpose_result[slice_name]['output_txt'])
+        output_directory = os.path.dirname(output_files[slice_name]['output_txt'])
         collapsed_directory = os.path.dirname(output_directory)
         collapsed_directory = f"{collapsed_directory}/collapsed"
         os.makedirs(collapsed_directory, exist_ok=True)
-        output_filename = Path(
-            f"{collapsed_directory}/frame{slice_number}.tif"
-        ).as_posix()
-        cellpose_result[slice_name]['collapsed_file'] = output_filename
+        output_filename = Path(f"{collapsed_directory}/frame{slice_number}.tif").as_posix()
+        output_files[slice_name]['collapsed_file'] = output_filename
         if os.path.exists(output_filename):
             if verbose:
                 print(f"Skipping {output_filename}, it already exists.")
@@ -170,79 +50,7 @@ def collapse_z(raw_dataset, cellpose_result, method='sum'):
             if verbose:
                 print(f"Saving image {output_filename}.")
         slice_number = slice_number + 1
-    return cellpose_result
-
-
-## The following is from a mix of a couple of implementations I found:
-## https://pyimagej.readthedocs.io/en/latest/Classic-Segmentation.html
-## an alternative method may be taken from:
-## https://pyimagej.readthedocs.io/en/latest/Classic-Segmentation.html#segmentation-workflow-with-imagej2
-## My goal is to pass the ROI regions to this function and create a similar df.
-def slices_to_roi_measurements(cellpose_result, collapsed=False):
-    """Read the text cellpose output files, generate ROIs, and measure.
-
-    I think there are better ways of accomplishing this task than
-    using ij.IJ.run(); but this seems to work...  Upon completion,
-    this function should add a series of dataframes to the
-    cellpose_result dictionary which comprise the various metrics from
-    ImageJ's measurement function of the ROIs detected by cellpose.
-    """
-    output_dict = cellpose_result
-    cellpose_slices = list(cellpose_result.keys())
-    slice_number = 0
-    for slice_name in cellpose_slices:
-        output_dict[slice_name]['slice_number'] = slice_number
-        input_tif = ''
-        if collapsed:
-            input_tif = cellpose_result[slice_name]['collapsed_file']
-        else:
-            input_tif = cellpose_result[slice_name]['input_file']
-        slice_dataset = ij.io().open(input_tif)
-        slice_data = ij.py.to_imageplus(slice_dataset)
-        input_txt = cellpose_result[slice_name]['output_txt']
-        input_mask = cellpose_result[slice_name]['output_mask']
-        if verbose:
-            print(f"Processing cellpose outline: {input_txt}")
-            print(f"Measuring: {input_tif}")
-        # convert Dataset to ImagePlus
-        imp = ij.py.to_imageplus(slice_data)
-        rm = ij.RoiManager.getRoiManager()
-        rm.runCommand("Associated", "true")
-        rm.runCommand("show All with labels")
-        ## The logic for this was taken from:
-        ## https://stackoverflow.com/questions/73849418/is-there-any-way-to-switch-imagej-macro-code-to-python3-code
-        txt_fh = open(input_txt, 'r')
-        set_string = f'Set Measurements...'
-        measure_string = f'area mean min centroid median skewness kurtosis integrated stack redirect=None decimal=3'
-        ij.IJ.run(set_string, measure_string)
-        roi_stats = defaultdict(list)
-        for line in txt_fh:
-            xy = line.rstrip().split(",")
-            xy_coords = [int(element) for element in xy]
-            x_coords = [int(element) for element in xy[::2]]
-            y_coords = [int(element) for element in xy[1::2]]
-            xcoords_jint = JArray(JInt)(x_coords)
-            ycoords_jint = JArray(JInt)(y_coords)
-            polygon_roi_instance = scyjava.jimport('ij.gui.PolygonRoi')
-            roi_instance = scyjava.jimport('ij.gui.Roi')
-            imported_polygon = polygon_roi_instance(
-                xcoords_jint, ycoords_jint, len(x_coords), int(roi_instance.POLYGON)
-            )
-            imp.setRoi(imported_polygon)
-            rm.addRoi(imported_polygon)
-            ij.IJ.run(imp, 'Measure', '')
-        slice_result = ij.ResultsTable.getResultsTable()
-        slice_table = ij.convert().convert(
-            slice_result, scyjava.jimport('org.scijava.table.Table')
-        )
-        slice_measurements = ij.py.from_java(slice_table)
-        output_dict[slice_name]['measurements'] = slice_measurements
-        ij.IJ.run('Clear Results')
-        txt_fh.close()
-        imp.setOverlay(ov)
-        imp.getProcessor().resetMinAndMax()
-        slice_number = slice_number + 1
-    return output_dict
+    return output_files
 
 
 def convert_slices_to_pandas(slices):
@@ -277,6 +85,141 @@ def convert_slices_to_pandas(slices):
     return concatenated
 
 
+def create_cellpose_rois(cellpose_result, raw_data, collapsed=False):
+    """Read the text cellpose output files, generate ROIs."""
+    output_dict = cellpose_result
+    cellpose_slices = list(cellpose_result.keys())
+    slice_number = 0
+    for slice_name in cellpose_slices:
+        output_dict[slice_name]['slice_number'] = slice_number
+        input_tif = ''
+        if collapsed:
+            input_tif = cellpose_result[slice_name]['collapsed_file']
+        else:
+            input_tif = cellpose_result[slice_name]['input_file']
+        slice_dataset = ij.io().open(input_tif)
+        slice_data = ij.py.to_imageplus(slice_dataset)
+        input_txt = cellpose_result[slice_name]['output_txt']
+        input_mask = cellpose_result[slice_name]['output_mask']
+        if verbose:
+            print(f"Processing cellpose outline: {input_txt}")
+            print(f"Measuring: {input_tif}")
+        # convert Dataset to ImagePlus
+        imp = ij.py.to_imageplus(slice_data)
+        rm = ij.RoiManager.getRoiManager()
+        rm.runCommand("Associated", "true")
+        rm.runCommand("show All with labels")
+        ## The logic for this was taken from:
+        ## https://stackoverflow.com/questions/73849418/is-there-any-way-to-switch-imagej-macro-code-to-python3-code
+        txt_fh = open(input_txt, 'r')
+        roi_stats = defaultdict(list)
+        for line in txt_fh:
+            xy = line.rstrip().split(",")
+            xy_coords = [int(element) for element in xy if element not in '']
+            x_coords = [int(element) for element in xy[::2] if element not in '']
+            y_coords = [int(element) for element in xy[1::2] if element not in '']
+            xcoords_jint = JArray(JInt)(x_coords)
+            ycoords_jint = JArray(JInt)(y_coords)
+            polygon_roi_instance = scyjava.jimport('ij.gui.PolygonRoi')
+            roi_instance = scyjava.jimport('ij.gui.Roi')
+            imported_polygon = polygon_roi_instance(
+                xcoords_jint, ycoords_jint, len(x_coords), int(roi_instance.POLYGON)
+            )
+            new_roi = imp.setRoi(imported_polygon)
+            added = rm.addRoi(imported_polygon)
+            output_dict[slice_name]['roi'] = new_roi
+            ## rm.runCommand('Update')
+        txt_fh.close()
+        imp.setOverlay(ov)
+        imp.getProcessor().resetMinAndMax()
+        slice_number = slice_number + 1
+    return output_dict
+
+
+## Relevant options:
+## batch_size(increase for more parallelization), channels(two element list of two element
+## channels to segment; the first is the segment, second is optional nucleus;
+## internal elements are color channels to query, so [[0,0],[2,3]] means do main cells in
+## grayscale and a second with cells in blue, nuclei in green.
+## channel_axis, z_axis ? invert (T/F flip pixels from b/w I assume),
+## normalize(T/F percentile normalize the data), diameter, do_3d,
+## anisotropy (rescaling factor for 3d segmentation), net_avg (average models),
+## augment ?, tile ?, resample, interp, flow_threshold, cellprob_threshold (interesting),
+## min_size (turned off with -1), stitch_threshold ?, rescale ?.
+def invoke_cellpose(input_directory, model_file, channels=[[0, 0]], diameter=160,
+                    threshold=0.4, do_3D=False, batch_size=64, verbose=True):
+    """Invoke cellpose using individual slices.
+
+    This takes the series of slices from separate_slices() and sends
+    them to cellpose with a specific model.  The dictionary it returns
+    is the primary datastructure for the various functions which follow.
+    """
+
+    ## Relevant options:
+    ## model_type(cyto, nuclei, cyto2), net_avg(T/F if load built in networks and average them)
+    model = models.CellposeModel(pretrained_model=model_file)
+    input_directory = Path(f"{input_directory}/slices").as_posix()
+    files = get_image_files(input_directory, '_masks', look_one_level_down=False)
+    needed_imgs = []
+    output_masks = []
+    output_txts = []
+    output_files = defaultdict(dict)
+    existing_files = 0
+    count = 0
+    for one_file in files:
+        print(f"Reading {one_file}")
+        cp_output_directory = Path(f"{input_directory}/cellpose").as_posix()
+        os.makedirs(cp_output_directory, exist_ok=True)
+        f_name = os.path.basename(one_file)
+        f_name = os.path.splitext(f_name)[0]
+        start_mask = Path(f"{input_directory}/{f_name}_cp_masks.png").as_posix()
+        output_mask = Path(f"{cp_output_directory}/{f_name}_cp_masks.png").as_posix()
+        start_txt = Path(f"{input_directory}/{f_name}_cp_outlines.txt").as_posix()
+        output_txt = Path(f"{cp_output_directory}/{f_name}_cp_outlines.txt").as_posix()
+        print(f"Adding new txt file: {output_txt}")
+        output_files[f_name]['input_file'] = one_file
+        output_files[f_name]['start_mask'] = start_mask
+        output_files[f_name]['output_mask'] = output_mask
+        output_files[f_name]['start_txt'] = start_txt
+        output_files[f_name]['output_txt'] = output_txt
+        output_files[f_name]['exists'] = False
+        if (os.path.exists(start_txt) or os.path.exists(output_txt)):
+            existing_files = existing_files + 1
+            print(f"This file already exists: {start_txt}")
+            output_files[f_name]['exists'] = True
+        else:
+            print(f"This file does not exist: {start_txt}")
+            img = imread(one_file)
+            needed_imgs.append(img)
+        count = count + 1
+    nimg = len(needed_imgs)
+    if verbose and nimg > 0:
+        print(f"Reading {nimg} images, starting cellpose.")
+        masks, flows, styles = model.eval(needed_imgs, diameter=diameter,
+                                          channels=channels, flow_threshold=threshold,
+                                          do_3D=do_3D, batch_size=batch_size)
+        saved = io.save_to_png(needed_imgs, masks, flows, files)
+    else:
+        print("Returning the output files.")
+    return output_files
+
+
+def move_cellpose_output(output_files):
+    """Cellpose puts its output files into the cwd, I want them in specific directories."""
+    print(f"Moving cellpose outputs to the cellpose output directory.")
+    output_filenames = list(output_files.keys())
+    for f_name in output_filenames:
+        print(
+            f"Moving {output_files[f_name]['start_mask']} to {output_files[f_name]['output_mask']}"
+        )
+        mask_moved = shutil.move(
+            output_files[f_name]['start_mask'], output_files[f_name]['output_mask']
+        )
+        txt_moved = shutil.move(
+            output_files[f_name]['start_txt'], output_files[f_name]['output_txt']
+        )
+
+
 def nearest_cells_over_time(
     df, max_dist=10.0, max_prop=0.7, x_column='X', y_column='Y', verbose=True
 ):
@@ -295,8 +238,7 @@ def nearest_cells_over_time(
     extract the data for individual cells and play with it.
     """
     gdf = geopandas.GeoDataFrame(
-        df, geometry=geopandas.points_from_xy(df[x_column], df[y_column])
-    )
+        df, geometry=geopandas.points_from_xy(df[x_column], df[y_column]))
 
     final_time = gdf.Frame.max()
     pairwise_distances = []
@@ -356,3 +298,155 @@ def nearest_cells_over_time(
                 traced[id_counter] = [start_cell, end_cell]
                 ends[end_cell] = id_counter
     return traced
+
+
+def separate_slices(input_file, wanted_x=True, wanted_y=True, wanted_z=1,
+    wanted_channel=2, cpus=8, overwrite=False, verbos=True):
+    """Slice an image in preparation for cellpose.
+
+    Eventually this should be smart enough to handle arbitrary
+    x,y,z,channels,times as well as able to use multiple cpus for
+    saving the data.  In its current implementation, it only saves 1
+    z, 1 channel for every frame of an image into a series of files in
+    its output directory.
+    """
+
+    input_base = os.path.basename(input_file)
+    input_dir = os.path.dirname(input_file)
+    input_name = os.path.splitext(input_base)[0]
+    output_directory = Path(f"{input_dir}/outputs/{input_name}_z{wanted_z}").as_posix()
+    slice_directory = Path(f"{output_directory}/slices").as_posix()
+    os.makedirs(output_directory, exist_ok=True)
+    os.makedirs(slice_directory, exist_ok=True)
+    if verbose:
+        print("Starting to open the input file, this takes a moment.")
+    raw_dataset = ij.io().open(input_file)
+    if verbose:
+        print(f"Opened input file, writing images to {output_directory}")
+
+    data_info = {}
+    for element in range(len(raw_dataset.dims)):
+        name = raw_dataset.dims[element]
+        data_info[name] = raw_dataset.shape[element]
+    if verbose:
+        print(
+            f"This dataset has dimensions: X:{data_info['X']}",
+            f"Y:{data_info['Y']} Z:{data_info['Z']} Time:{data_info['Time']}",
+        )
+
+    slices = []
+    for timepoint in range(data_info['Time']):
+        wanted_slice = raw_dataset[:, :, wanted_channel, wanted_z, timepoint]
+        slice_data = ij.py.to_dataset(wanted_slice)
+        output_filename = Path(f"{output_directory}/slices/frame_{timepoint}.tif").as_posix()
+        if os.path.exists(output_filename):
+            if overwrite:
+                print(f"Rewriting {output_filename}")
+                os.remove(output_filename)
+                saved = ij.io().save(slice_data, output_filename)
+            else:
+                if verbose:
+                    print(f"Skipping {output_filename}, it already exists.")
+        else:
+            saved = ij.io().save(slice_data, output_filename)
+            if verbose:
+                print(f"Saving image {input_name}_{timepoint}.")
+        slices.append(wanted_slice)
+    print(f"Returning the output directory: {output_directory}")
+    return raw_dataset, slices, output_directory
+
+
+## The following is from a mix of a couple of implementations I found:
+## https://pyimagej.readthedocs.io/en/latest/Classic-Segmentation.html
+## an alternative method may be taken from:
+## https://pyimagej.readthedocs.io/en/latest/Classic-Segmentation.html#segmentation-workflow-with-imagej2
+## My goal is to pass the ROI regions to this function and create a similar df.
+def slices_to_roi_measurements(cellpose_result, collapsed=False):
+    """Read the text cellpose output files, generate ROIs, and measure.
+
+    I think there are better ways of accomplishing this task than
+    using ij.IJ.run(); but this seems to work...  Upon completion,
+    this function should add a series of dataframes to the
+    cellpose_result dictionary which comprise the various metrics from
+    ImageJ's measurement function of the ROIs detected by cellpose.
+    """
+    output_dict = cellpose_result
+    cellpose_slices = list(cellpose_result.keys())
+    slice_number = 0
+    for slice_name in cellpose_slices:
+        output_dict[slice_name]['slice_number'] = slice_number
+        input_tif = ''
+        if collapsed:
+            input_tif = cellpose_result[slice_name]['collapsed_file']
+        else:
+            input_tif = cellpose_result[slice_name]['input_file']
+        slice_dataset = ij.io().open(input_tif)
+        slice_data = ij.py.to_imageplus(slice_dataset)
+        input_txt = cellpose_result[slice_name]['output_txt']
+        input_mask = cellpose_result[slice_name]['output_mask']
+        if verbose:
+            print(f"Processing cellpose outline: {input_txt}")
+            print(f"Measuring: {input_tif}")
+        # convert Dataset to ImagePlus
+        imp = ij.py.to_imageplus(slice_data)
+        rm = ij.RoiManager.getRoiManager()
+        rm.runCommand("Associated", "true")
+        rm.runCommand("show All with labels")
+        ## The logic for this was taken from:
+        ## https://stackoverflow.com/questions/73849418/is-there-any-way-to-switch-imagej-macro-code-to-python3-code
+        txt_fh = open(input_txt, 'r')
+        set_string = f'Set Measurements...'
+        measure_string = f'area mean min centroid median skewness kurtosis integrated stack redirect=None decimal=3'
+        ij.IJ.run(set_string, measure_string)
+        roi_stats = defaultdict(list)
+        for line in txt_fh:
+            xy = line.rstrip().split(",")
+            xy_coords = [int(element) for element in xy if element not in '']
+            x_coords = [int(element) for element in xy[::2] if element not in '']
+            y_coords = [int(element) for element in xy[1::2] if element not in '']
+            xcoords_jint = JArray(JInt)(x_coords)
+            ycoords_jint = JArray(JInt)(y_coords)
+            polygon_roi_instance = scyjava.jimport('ij.gui.PolygonRoi')
+            roi_instance = scyjava.jimport('ij.gui.Roi')
+            imported_polygon = polygon_roi_instance(
+                xcoords_jint, ycoords_jint, len(x_coords), int(roi_instance.POLYGON)
+            )
+            imp.setRoi(imported_polygon)
+            rm.addRoi(imported_polygon)
+            ij.IJ.run(imp, 'Measure', '')
+        ## rm.runCommand('Update')  ## I think the update command needs an open image to function.
+        slice_result = ij.ResultsTable.getResultsTable()
+        slice_table = ij.convert().convert(
+            slice_result, scyjava.jimport('org.scijava.table.Table')
+        )
+        slice_measurements = ij.py.from_java(slice_table)
+        output_dict[slice_name]['measurements'] = slice_measurements
+        ij.IJ.run('Clear Results')
+        txt_fh.close()
+        imp.setOverlay(ov)
+        imp.getProcessor().resetMinAndMax()
+        slice_number = slice_number + 1
+    return output_dict
+
+
+def start_fiji(
+    base=None, mem='-Xmx64g', location='venv/bin/Fiji.app', mode='interactive'
+):
+    scyjava.config.add_option(mem)
+    start_dir = os.getcwd()
+    if base:
+        start_dir = base
+    print(f"Where am I: {start_dir}")
+    ij = imagej.init(Path(location), mode=mode)
+    ij.getApp().getInfo(True)
+    ij.ui().showUI()
+    ## Something about this init() function changes the current working directory.
+    os.chdir(start_dir)
+    ij.getVersion()
+    showPolygonRoi = scyjava.jimport('ij.gui.PolygonRoi')
+    Overlay = scyjava.jimport('ij.gui.Overlay')
+    Regions = scyjava.jimport('net.imglib2.roi.Regions')
+    LabelRegions = scyjava.jimport('net.imglib2.roi.labeling.LabelRegions')
+    ZProjector = scyjava.jimport('ij.plugin.ZProjector')()
+    ov = Overlay()
+    return ij, showPolygonRoi, Overlay, Regions, LabelRegions, ZProjector, ov
