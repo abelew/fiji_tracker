@@ -17,7 +17,7 @@ import seaborn
 import shutil
 
 
-def collapse_z(raw_dataset, output_files, method='sum'):
+def collapse_z(raw_dataset, output_files, method='sum', verbose=True):
     """Stack multiple z slices for each timepoint.
 
     If I understand Jacques' explanation of the quantification methods
@@ -85,7 +85,7 @@ def convert_slices_to_pandas(slices):
     return concatenated
 
 
-def create_cellpose_rois(cellpose_result, raw_data, collapsed=False):
+def create_cellpose_rois(cellpose_result, raw_data, collapsed=False, verbose=True):
     """Read the text cellpose output files, generate ROIs."""
     output_dict = cellpose_result
     cellpose_slices = list(cellpose_result.keys())
@@ -204,25 +204,26 @@ def invoke_cellpose(input_directory, model_file, channels=[[0, 0]], diameter=160
     return output_files
 
 
-def move_cellpose_output(output_files):
+def move_cellpose_output(output_files, verbose=False):
     """Cellpose puts its output files into the cwd, I want them in specific directories."""
     print(f"Moving cellpose outputs to the cellpose output directory.")
     output_filenames = list(output_files.keys())
     for f_name in output_filenames:
-        print(
-            f"Moving {output_files[f_name]['start_mask']} to {output_files[f_name]['output_mask']}"
-        )
-        mask_moved = shutil.move(
-            output_files[f_name]['start_mask'], output_files[f_name]['output_mask']
-        )
-        txt_moved = shutil.move(
-            output_files[f_name]['start_txt'], output_files[f_name]['output_txt']
-        )
+        output_file = output_files[f_name]['output_mask']
+        if (os.path.exists(output_file)):
+            if verbose:
+                print("The output already exists.")
+        else:
+            if verbose:
+                print(f"Moving {output_files[f_name]['start_mask']} to {output_file}")
+            mask_moved = shutil.move(output_files[f_name]['start_mask'],
+                                     output_files[f_name]['output_mask'])
+            txt_moved = shutil.move(output_files[f_name]['start_txt'],
+                                    output_files[f_name]['output_txt'])
 
 
-def nearest_cells_over_time(
-    df, max_dist=10.0, max_prop=0.7, x_column='X', y_column='Y', verbose=True
-):
+def nearest_cells_over_time(df, max_dist=10.0, max_prop=0.7, x_column='X',
+                            y_column='Y', verbose=True):
     """Trace cells over time
 
     If I understand Jacques' goals correctly, the tracing of cells
@@ -300,7 +301,7 @@ def nearest_cells_over_time(
     return traced
 
 
-def separate_slices(input_file, wanted_x=True, wanted_y=True, wanted_z=1,
+def separate_slices(input_file, ij, wanted_x=True, wanted_y=True, wanted_z=1,
     wanted_channel=2, cpus=8, overwrite=False, verbose=True):
     """Slice an image in preparation for cellpose.
 
@@ -361,7 +362,7 @@ def separate_slices(input_file, wanted_x=True, wanted_y=True, wanted_z=1,
 ## an alternative method may be taken from:
 ## https://pyimagej.readthedocs.io/en/latest/Classic-Segmentation.html#segmentation-workflow-with-imagej2
 ## My goal is to pass the ROI regions to this function and create a similar df.
-def slices_to_roi_measurements(cellpose_result, collapsed=False):
+def slices_to_roi_measurements(cellpose_result, ij, collapsed=False, verbose=True):
     """Read the text cellpose output files, generate ROIs, and measure.
 
     I think there are better ways of accomplishing this task than
@@ -429,9 +430,7 @@ def slices_to_roi_measurements(cellpose_result, collapsed=False):
     return output_dict
 
 
-def start_fiji(
-    base=None, mem='-Xmx64g', location='venv/bin/Fiji.app', mode='interactive'
-):
+def start_fiji(base=None, mem='-Xmx64g', location='venv/bin/Fiji.app', mode='interactive'):
     scyjava.config.add_option(mem)
     start_dir = os.getcwd()
     if base:
