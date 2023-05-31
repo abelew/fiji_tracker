@@ -147,7 +147,7 @@ def create_cellpose_rois(cellpose_result, raw_data, collapsed=False):
 ## augment ?, tile ?, resample, interp, flow_threshold, cellprob_threshold (interesting),
 ## min_size (turned off with -1), stitch_threshold ?, rescale ?.
 def invoke_cellpose(input_directory, model_file, channels=[[0, 0]], diameter=160,
-                    threshold=0.4, do_3D=False, batch_size=64, verbose=True):
+                    threshold=0.4, do_3D=False, batch_size=64, verbose=True, gpu=False):
     """Invoke cellpose using individual slices.
 
     This takes the series of slices from separate_slices() and sends
@@ -157,9 +157,9 @@ def invoke_cellpose(input_directory, model_file, channels=[[0, 0]], diameter=160
 
     ## Relevant options:
     ## model_type(cyto, nuclei, cyto2), net_avg(T/F if load built in networks and average them)
-    model = models.CellposeModel(pretrained_model=model_file)
-    input_directory = Path(f"{input_directory}/slices").as_posix()
-    files = get_image_files(input_directory, '_masks', look_one_level_down=False)
+    model = models.CellposeModel(gpu=gpu, pretrained_model=model_file)
+    slice_directory = Path(f"{input_directory}/slices").as_posix()
+    files = get_image_files(slice_directory, '_masks', look_one_level_down=False)
     needed_imgs = []
     output_masks = []
     output_txts = []
@@ -172,9 +172,9 @@ def invoke_cellpose(input_directory, model_file, channels=[[0, 0]], diameter=160
         os.makedirs(cp_output_directory, exist_ok=True)
         f_name = os.path.basename(one_file)
         f_name = os.path.splitext(f_name)[0]
-        start_mask = Path(f"{input_directory}/{f_name}_cp_masks.png").as_posix()
+        start_mask = Path(f"{slice_directory}/{f_name}_cp_masks.png").as_posix()
         output_mask = Path(f"{cp_output_directory}/{f_name}_cp_masks.png").as_posix()
-        start_txt = Path(f"{input_directory}/{f_name}_cp_outlines.txt").as_posix()
+        start_txt = Path(f"{slice_directory}/{f_name}_cp_outlines.txt").as_posix()
         output_txt = Path(f"{cp_output_directory}/{f_name}_cp_outlines.txt").as_posix()
         print(f"Adding new txt file: {output_txt}")
         output_files[f_name]['input_file'] = one_file
@@ -301,7 +301,7 @@ def nearest_cells_over_time(
 
 
 def separate_slices(input_file, wanted_x=True, wanted_y=True, wanted_z=1,
-    wanted_channel=2, cpus=8, overwrite=False, verbos=True):
+    wanted_channel=2, cpus=8, overwrite=False, verbose=True):
     """Slice an image in preparation for cellpose.
 
     Eventually this should be smart enough to handle arbitrary
