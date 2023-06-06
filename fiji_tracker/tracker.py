@@ -53,7 +53,7 @@ def collapse_z(raw_dataset, output_files, method='sum', verbose=True):
     return output_files
 
 
-def convert_slices_to_pandas(slices):
+def convert_slices_to_pandas(slices, verbose=False):
     """Dump the cellpose_result slice data to a single df.
 
     There is no good reason for me to store the data as a series of
@@ -85,34 +85,48 @@ def convert_slices_to_pandas(slices):
     return concatenated
 
 
-def create_cellpose_rois(cellpose_result, raw_data, collapsed=False, verbose=True):
+def create_cellpose_rois(output_files, ij, raw_file, collapsed=False, verbose=True):
     """Read the text cellpose output files, generate ROIs."""
-    output_dict = cellpose_result
-    cellpose_slices = list(cellpose_result.keys())
-    slice_number = 0
+    cellpose_slices = list(output_files.keys())[2]
+    slice_number = 1
+    time_frame = 1
+    raw_image = ij.io().open(raw_file)
+    shown = ij.ui().show(raw_image)
+    imp = ij.py.to_imageplus(raw_image)
+    data_info = {}
+    for element in range(len(raw_ima.dims)):
+        name = raw_image.dims[element]
+        data_info[name] = raw_image.shape[element]
+    num_times = data_info['Time']
+    num_channels = data_info['Channel']
+    num_z = data_info['Z']
+
+    Overlay = scyjava.jimport('ij.gui.Overlay')
+    ov = Overlay()
+    rm = ij.RoiManager.getRoiManager()
+    rm.runCommand("Associated", "true")
+    rm.runCommand("show All with labels")
+    slice_directory = ''
+    print("Starting to iterate over slices.")
     for slice_name in cellpose_slices:
-        output_dict[slice_name]['slice_number'] = slice_number
-        input_tif = ''
-        if collapsed:
-            input_tif = cellpose_result[slice_name]['collapsed_file']
-        else:
-            input_tif = cellpose_result[slice_name]['input_file']
-        slice_dataset = ij.io().open(input_tif)
-        slice_data = ij.py.to_imageplus(slice_dataset)
-        input_txt = cellpose_result[slice_name]['output_txt']
-        input_mask = cellpose_result[slice_name]['output_mask']
-        if verbose:
-            print(f"Processing cellpose outline: {input_txt}")
-            print(f"Measuring: {input_tif}")
-        # convert Dataset to ImagePlus
-        imp = ij.py.to_imageplus(slice_data)
-        rm = ij.RoiManager.getRoiManager()
-        rm.runCommand("Associated", "true")
-        rm.runCommand("show All with labels")
+        print(f"Starting slice {time_frame}.")
+        output_files[slice_name]['slice_number'] = slice_number
+        input_tif = output_files[slice_name]['input_file']
+        slice_directory_name = os.path.basename(os.path.dirname(os.path.dirname(input_tif)))
+        input_txt = output_files[slice_name]['output_txt']
+        input_mask = output_files[slice_name]['output_mask']
         ## The logic for this was taken from:
         ## https://stackoverflow.com/questions/73849418/is-there-any-way-to-switch-imagej-macro-code-to-python3-code
         txt_fh = open(input_txt, 'r')
         roi_stats = defaultdict(list)
+        frame_xcoords = []
+        frame_ycoords = []
+        coords_length = []
+        ## Now get the slice for this timepoint from the raw data
+        macro = f"setSlice({slice_number})"
+        print(f"Running macro: {macro}")
+        chosen = ij.py.run_macro(macro)
+        seleced = []
         for line in txt_fh:
             xy = line.rstrip().split(",")
             xy_coords = [int(element) for element in xy if element not in '']
@@ -122,18 +136,29 @@ def create_cellpose_rois(cellpose_result, raw_data, collapsed=False, verbose=Tru
             ycoords_jint = JArray(JInt)(y_coords)
             polygon_roi_instance = scyjava.jimport('ij.gui.PolygonRoi')
             roi_instance = scyjava.jimport('ij.gui.Roi')
-            imported_polygon = polygon_roi_instance(
-                xcoords_jint, ycoords_jint, len(x_coords), int(roi_instance.POLYGON)
-            )
-            new_roi = imp.setRoi(imported_polygon)
+            frame_xcoords.append(x_coords)
+            frame_ycoords.append(y_coords)
+            coords_length.append(len(x_coords))
+            imported_polygon = polygon_roi_instance(xcoords_jint, ycoords_jint,
+                                                    len(x_coords), int(roi_instance.POLYGON))
+            ij.IJ.run(imp, 'Create Selection', '')
+            imp.setRoi(imported_polygon)
             added = rm.addRoi(imported_polygon)
-            output_dict[slice_name]['roi'] = new_roi
-            ## rm.runCommand('Update')
+            print(f"Adding new roi to frame {slice_number}")
+            print("About to update.")
+            rm.runCommand('Update')
+            print("Completed update.")
         txt_fh.close()
-        imp.setOverlay(ov)
-        imp.getProcessor().resetMinAndMax()
-        slice_number = slice_number + 1
-    return output_dict
+        output_files[slice_name]['xcoords'] = frame_xcoords
+        output_files[slice_name]['ycoords'] = frame_ycoords
+        output_files[slice_name]['coord_len'] = coords_length
+        slice_number = slice_number + (num_z * num_channels)
+        time_frame = timeframe + 1
+
+    selected = ij.py.run_macro("roiManager('Select All')")
+    rm.runCommand('Save', f"{slice_directory_name}.zip")
+    rm.runCommand('Delete')
+    return output_files
 
 
 ## Relevant options:
@@ -371,6 +396,14 @@ def slices_to_roi_measurements(cellpose_result, ij, collapsed=False, verbose=Tru
     cellpose_result dictionary which comprise the various metrics from
     ImageJ's measurement function of the ROIs detected by cellpose.
     """
+
+    showPolygonRoi = scyjava.jimport('ij.gui.PolygonRoi')
+    Overlay = scyjava.jimport('ij.gui.Overlay')
+    Regions = scyjava.jimport('net.imglib2.roi.Regions')
+    LabelRegions = scyjava.jimport('net.imglib2.roi.labeling.LabelRegions')
+    ZProjector = scyjava.jimport('ij.plugin.ZProjector')()
+    ov = Overlay()
+
     output_dict = cellpose_result
     cellpose_slices = list(cellpose_result.keys())
     slice_number = 0
@@ -430,7 +463,7 @@ def slices_to_roi_measurements(cellpose_result, ij, collapsed=False, verbose=Tru
     return output_dict
 
 
-def start_fiji(base=None, mem='-Xmx64g', location='venv/bin/Fiji.app', mode='interactive'):
+def start_fiji(base=None, mem='-Xmx64g', location='venv/bin/Fiji.app', mode='interactive', input_file=None):
     scyjava.config.add_option(mem)
     start_dir = os.getcwd()
     if base:
@@ -442,10 +475,10 @@ def start_fiji(base=None, mem='-Xmx64g', location='venv/bin/Fiji.app', mode='int
     ## Something about this init() function changes the current working directory.
     os.chdir(start_dir)
     ij.getVersion()
-    showPolygonRoi = scyjava.jimport('ij.gui.PolygonRoi')
-    Overlay = scyjava.jimport('ij.gui.Overlay')
-    Regions = scyjava.jimport('net.imglib2.roi.Regions')
-    LabelRegions = scyjava.jimport('net.imglib2.roi.labeling.LabelRegions')
-    ZProjector = scyjava.jimport('ij.plugin.ZProjector')()
-    ov = Overlay()
-    return ij, showPolygonRoi, Overlay, Regions, LabelRegions, ZProjector, ov
+    raw_image = None
+    imp = None
+    if input_file:
+        raw_image = ij.io().open(input_file)
+        shown = ij.ui().show(raw_image)
+        imp = ij.py.to_imageplus(raw_image)
+    return ij, raw_image, imp
