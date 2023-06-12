@@ -99,6 +99,11 @@ def create_cellpose_rois(output_files, ij, raw_image, imp, collapsed=False, verb
 
     Overlay = scyjava.jimport('ij.gui.Overlay')
     ov = Overlay()
+    ## Set the initial time/Channel/Z
+    time_set = imp.setT(1)
+    Z_set = imp.setZ(1)
+    C_set = imp.setC(1)
+
     rm = ij.RoiManager.getRoiManager()
     rm.runCommand("Associated", "true")
     ## rm.runCommand("show All with labels")
