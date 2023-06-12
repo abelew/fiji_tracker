@@ -85,19 +85,15 @@ def convert_slices_to_pandas(slices, verbose=False):
     return concatenated
 
 
-def create_cellpose_rois(output_files, ij, raw_file, collapsed=False, verbose=True):
+def create_cellpose_rois(output_files, ij, raw_image, imp, collapsed=False, verbose=True,
+                         delete = False, max_frames = 3):
     """Read the text cellpose output files, generate ROIs."""
-    cellpose_slices = list(output_files.keys())[2]
-    slice_number = 1
-    time_frame = 1
-    raw_image = ij.io().open(raw_file)
-    shown = ij.ui().show(raw_image)
-    imp = ij.py.to_imageplus(raw_image)
+    cellpose_slices = list(output_files.keys())
     data_info = {}
-    for element in range(len(raw_ima.dims)):
+    for element in range(len(raw_image.dims)):
         name = raw_image.dims[element]
         data_info[name] = raw_image.shape[element]
-    num_times = data_info['Time']
+    num_times = data_info['Time'] + 1
     num_channels = data_info['Channel']
     num_z = data_info['Z']
 
@@ -105,12 +101,13 @@ def create_cellpose_rois(output_files, ij, raw_file, collapsed=False, verbose=Tr
     ov = Overlay()
     rm = ij.RoiManager.getRoiManager()
     rm.runCommand("Associated", "true")
-    rm.runCommand("show All with labels")
+    ## rm.runCommand("show All with labels")
     slice_directory = ''
-    print("Starting to iterate over slices.")
-    for slice_name in cellpose_slices:
-        print(f"Starting slice {time_frame}.")
-        output_files[slice_name]['slice_number'] = slice_number
+    print("Starting to iterate over times.")
+    for timepoint in range(1, num_times):
+        frame_number = timepoint - 1 ## I used 0-indexed for the frames.
+        imp.setT(timepoint)
+        slice_name = f"frame_{frame_number}"
         input_tif = output_files[slice_name]['input_file']
         slice_directory_name = os.path.basename(os.path.dirname(os.path.dirname(input_tif)))
         input_txt = output_files[slice_name]['output_txt']
@@ -119,14 +116,7 @@ def create_cellpose_rois(output_files, ij, raw_file, collapsed=False, verbose=Tr
         ## https://stackoverflow.com/questions/73849418/is-there-any-way-to-switch-imagej-macro-code-to-python3-code
         txt_fh = open(input_txt, 'r')
         roi_stats = defaultdict(list)
-        frame_xcoords = []
-        frame_ycoords = []
-        coords_length = []
         ## Now get the slice for this timepoint from the raw data
-        macro = f"setSlice({slice_number})"
-        print(f"Running macro: {macro}")
-        chosen = ij.py.run_macro(macro)
-        seleced = []
         for line in txt_fh:
             xy = line.rstrip().split(",")
             xy_coords = [int(element) for element in xy if element not in '']
@@ -141,23 +131,22 @@ def create_cellpose_rois(output_files, ij, raw_file, collapsed=False, verbose=Tr
             coords_length.append(len(x_coords))
             imported_polygon = polygon_roi_instance(xcoords_jint, ycoords_jint,
                                                     len(x_coords), int(roi_instance.POLYGON))
-            ij.IJ.run(imp, 'Create Selection', '')
             imp.setRoi(imported_polygon)
             added = rm.addRoi(imported_polygon)
-            print(f"Adding new roi to frame {slice_number}")
-            print("About to update.")
-            rm.runCommand('Update')
-            print("Completed update.")
+            roi_count = rm.getCount() ## Get the current number of ROIs, 1 indexed.
+            roi_count = rm.getCount()
+            roi_zero_idx = roi_count - 1
+            selected = rm.select(roi_zero_idx)
+            time_set = imp.setT(timepoint)
+            updated = rm.runCommand("Update")
+            print(f"Finished time: {timepoint} ROI: {roi_count}")
         txt_fh.close()
-        output_files[slice_name]['xcoords'] = frame_xcoords
-        output_files[slice_name]['ycoords'] = frame_ycoords
-        output_files[slice_name]['coord_len'] = coords_length
-        slice_number = slice_number + (num_z * num_channels)
-        time_frame = timeframe + 1
-
-    selected = ij.py.run_macro("roiManager('Select All')")
+    imp.show()
+    roi_index = JArray(JInt)(range(0, rm.getCount()))
+    rm.setSelectedIndexes(roi_index)
     rm.runCommand('Save', f"{slice_directory_name}.zip")
-    rm.runCommand('Delete')
+    if delete:
+        rm.runCommand('Delete')
     return output_files
 
 
