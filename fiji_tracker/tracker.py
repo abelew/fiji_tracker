@@ -106,7 +106,6 @@ def create_cellpose_rois(output_files, ij, raw_image, imp, collapsed=False, verb
     print("Starting to iterate over times.")
     for timepoint in range(1, num_times):
         frame_number = timepoint - 1 ## I used 0-indexed for the frames.
-        imp.setT(timepoint)
         slice_name = f"frame_{frame_number}"
         input_tif = output_files[slice_name]['input_file']
         slice_directory_name = os.path.basename(os.path.dirname(os.path.dirname(input_tif)))
@@ -126,9 +125,6 @@ def create_cellpose_rois(output_files, ij, raw_image, imp, collapsed=False, verb
             ycoords_jint = JArray(JInt)(y_coords)
             polygon_roi_instance = scyjava.jimport('ij.gui.PolygonRoi')
             roi_instance = scyjava.jimport('ij.gui.Roi')
-            frame_xcoords.append(x_coords)
-            frame_ycoords.append(y_coords)
-            coords_length.append(len(x_coords))
             imported_polygon = polygon_roi_instance(xcoords_jint, ycoords_jint,
                                                     len(x_coords), int(roi_instance.POLYGON))
             imp.setRoi(imported_polygon)
