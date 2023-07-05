@@ -132,6 +132,8 @@ def create_cellpose_rois(output_files, ij, raw_image, imp, collapsed=False, verb
             roi_instance = scyjava.jimport('ij.gui.Roi')
             imported_polygon = polygon_roi_instance(xcoords_jint, ycoords_jint,
                                                     len(x_coords), int(roi_instance.POLYGON))
+            ## I think it is worth checking if the following line is necessary?
+            ## If I am correct, then it is the reason the screen jumps between roi creation events.
             imp.setRoi(imported_polygon)
             added = rm.addRoi(imported_polygon)
             roi_count = rm.getCount() ## Get the current number of ROIs, 1 indexed.
@@ -237,7 +239,7 @@ def move_cellpose_output(output_files, verbose=False):
                                     output_files[f_name]['output_txt'])
 
 
-def nearest_cells_over_time(df, max_dist=10.0, max_prop=0.7, x_column='X',
+def nearest_cells_over_time(df, max_dist=10.0, max_prop=0.3, x_column='X',
                             y_column='Y', verbose=True):
     """Trace cells over time
 
@@ -258,7 +260,7 @@ def nearest_cells_over_time(df, max_dist=10.0, max_prop=0.7, x_column='X',
 
     final_time = gdf.Frame.max()
     pairwise_distances = []
-    for start_time in range(1, final_time):
+    for start_time in range(0, final_time):
         i = start_time
         j = i + 1
         ti_idx = gdf.Frame == i
@@ -269,7 +271,8 @@ def nearest_cells_over_time(df, max_dist=10.0, max_prop=0.7, x_column='X',
         tj = gdf[tj_idx]
         ti_rows = ti.shape[0]
         tj_rows = tj.shape[0]
-        titj = geopandas.sjoin_nearest(ti, tj, distance_col="pairwise_dist")
+        titj = geopandas.sjoin_nearest(ti, tj, distance_col="pairwise_dist",
+                                       max_distance=max_dist)
         pairwise_distances.append(titj)
 
     id_counter = 0
