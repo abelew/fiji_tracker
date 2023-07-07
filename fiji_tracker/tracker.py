@@ -5,6 +5,7 @@ import geopandas
 import glob
 import imagej
 from jpype import JArray, JInt
+from math import isnan
 import matplotlib.pyplot as plt
 import multiprocessing as mp
 import numpy as np
@@ -15,7 +16,6 @@ from pathlib import Path
 import scyjava
 import seaborn
 import shutil
-
 
 def collapse_z(raw_dataset, output_files, method='sum', verbose=True):
     """Stack multiple z slices for each timepoint.
@@ -99,18 +99,14 @@ def create_cellpose_rois(output_files, ij, raw_image, imp, collapsed=False, verb
 
     Overlay = scyjava.jimport('ij.gui.Overlay')
     ov = Overlay()
-    ## Set the initial time/Channel/Z
-    time_set = imp.setT(1)
-    Z_set = imp.setZ(1)
-    C_set = imp.setC(1)
-
     rm = ij.RoiManager.getRoiManager()
     rm.runCommand("Associated", "true")
-    ## rm.runCommand("show All with labels")
     slice_directory = ''
     print("Starting to iterate over times.")
     for timepoint in range(1, num_times):
         frame_number = timepoint - 1 ## I used 0-indexed for the frames.
+        print(f"Going to time: {timepoint}")
+        imp.setT(timepoint)
         slice_name = f"frame_{frame_number}"
         input_tif = output_files[slice_name]['input_file']
         slice_directory_name = os.path.basename(os.path.dirname(os.path.dirname(input_tif)))
@@ -120,6 +116,9 @@ def create_cellpose_rois(output_files, ij, raw_image, imp, collapsed=False, verb
         ## https://stackoverflow.com/questions/73849418/is-there-any-way-to-switch-imagej-macro-code-to-python3-code
         txt_fh = open(input_txt, 'r')
         roi_stats = defaultdict(list)
+        frame_xcoords = []
+        frame_ycoords = []
+        coords_length = []
         ## Now get the slice for this timepoint from the raw data
         for line in txt_fh:
             xy = line.rstrip().split(",")
@@ -132,12 +131,9 @@ def create_cellpose_rois(output_files, ij, raw_image, imp, collapsed=False, verb
             roi_instance = scyjava.jimport('ij.gui.Roi')
             imported_polygon = polygon_roi_instance(xcoords_jint, ycoords_jint,
                                                     len(x_coords), int(roi_instance.POLYGON))
-            ## I think it is worth checking if the following line is necessary?
-            ## If I am correct, then it is the reason the screen jumps between roi creation events.
             imp.setRoi(imported_polygon)
             added = rm.addRoi(imported_polygon)
             roi_count = rm.getCount() ## Get the current number of ROIs, 1 indexed.
-            roi_count = rm.getCount()
             roi_zero_idx = roi_count - 1
             selected = rm.select(roi_zero_idx)
             time_set = imp.setT(timepoint)
@@ -239,7 +235,7 @@ def move_cellpose_output(output_files, verbose=False):
                                     output_files[f_name]['output_txt'])
 
 
-def nearest_cells_over_time(df, max_dist=10.0, max_prop=0.3, x_column='X',
+def nearest_cells_over_time(df, max_dist=100.0, max_prop=None, x_column='X',
                             y_column='Y', verbose=True):
     """Trace cells over time
 
@@ -271,38 +267,27 @@ def nearest_cells_over_time(df, max_dist=10.0, max_prop=0.3, x_column='X',
         tj = gdf[tj_idx]
         ti_rows = ti.shape[0]
         tj_rows = tj.shape[0]
-        titj = geopandas.sjoin_nearest(ti, tj, distance_col="pairwise_dist",
-                                       max_distance=max_dist)
-        pairwise_distances.append(titj)
+        for ti_row in range(0, ti_rows):
+            ti_element = ti.iloc[[ti_row, ]]
+            titj = geopandas.sjoin_nearest(ti_element, tj, distance_col="pairwise_dist",
+                                           max_distance=max_dist)
+            chosen_closest_dist = titj.pairwise_dist.min()
+            if (isnan(chosen_closest_dist)):
+                print(f"This element has no neighbor within {max_dist}.")
+            else:
+                chosen_closest_cell = titj.pairwise_dist == chosen_closest_dist
+                chosen_closest_row = titj[chosen_closest_cell]
+                pairwise_distances.append(chosen_closest_row)
 
+    paired = pandas.concat(pairwise_distances)
     id_counter = 0
     ## Cell IDs pointing to a list of cells
     traced = {}
     ## Endpoints pointing to the cell IDs
     ends = {}
     for i in range(0, final_time - 1):
-        query = pairwise_distances[i]
-        passed_idx = query.pairwise_dist <= max_dist
-        failed_idx = query.pairwise_dist > max_dist
-        if failed_idx.sum() > 0:
-            if verbose:
-                print(f"Skipped {failed_idx.sum()} elements in segment {i}.")
-        query = query[passed_idx]
-
-        prop_change = query.Area_left / query.Area_right
-        increased_idx = prop_change > 1.0
-        prop_change[increased_idx] = 1.0 / prop_change[increased_idx]
-        failed_idx = prop_change < max_prop
-        passed_idx = prop_change >= max_prop
-        if failed_idx.sum() > 0:
-            if verbose:
-                skip_string = (
-                    f"Skipped {failed_idx.sum()} elements in segment {i} ",
-                    f"because the size changed too much.",
-                )
-                print(skip_string)
-            query = query[passed_idx]
-
+        query_idx = paired.Frame_left == i
+        query = paired[query_idx]
         for row in query.itertuples():
             start_cell = row.Index
             end_cell = row.index_right
@@ -316,7 +301,7 @@ def nearest_cells_over_time(df, max_dist=10.0, max_prop=0.3, x_column='X',
                 id_counter = id_counter + 1
                 traced[id_counter] = [start_cell, end_cell]
                 ends[end_cell] = id_counter
-    return traced
+    return traced, paired, pairwise_distances
 
 
 def separate_slices(input_file, ij, wanted_x=True, wanted_y=True, wanted_z=1,
