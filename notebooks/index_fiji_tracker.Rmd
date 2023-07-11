@@ -1,0 +1,499 @@
+---
+title: "Splitting a large dataset, running cellpose, and measuring the results using fiji tracker."
+author: "atb abelew@gmail.com"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_download: true
+    code_folding: show
+    fig_caption: true
+    fig_height: 7
+    fig_width: 7
+    highlight: zenburn
+    keep_md: false
+    mode: selfcontained
+    number_sections: true
+    self_contained: true
+    theme: readable
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+---
+
+<style type="text/css">
+body, td {
+  font-size: 16px;
+}
+code.r{
+  font-size: 16px;
+}
+pre {
+ font-size: 16px
+}
+</style>
+
+```{r options, include=FALSE}
+knitr::opts_knit$set(
+  width = 120, progress = TRUE, verbose = TRUE, echo = TRUE)
+knitr::opts_chunk$set(error = TRUE, dpi = 96)
+lua_filters <- rmarkdown::pandoc_lua_filter_args("pandoc-zotxt.lua")
+old_options <- options(
+  digits = 4, stringsAsFactors = FALSE, knitr.duplicate.label = "allow")
+ggplot2::theme_set(ggplot2::theme_bw(base_size = 10))
+rundate <- format(Sys.Date(), format = "%Y%m%d")
+previous_file <- ""
+ver <- format(Sys.Date(), "%Y%m%d")
+
+##tmp <- sm(loadme(filename=paste0(gsub(pattern="\\.Rmd", replace="", x=previous_file), "-v", ver, ".rda.xz")))
+rmd_file <- "index_functions_big.Rmd"
+library(spatstat.geom)
+library(reticulate)
+```
+
+# Changelog
+
+* 20230508: Trying this out with a larger dataset, explicitly set wanted_z and wanted_channel for it.
+* 20230328: Reimplemented steps as functions, connected them in one set of calls.
+* 20230317: Initial cellpose implementation.
+* 20230315: Separation of input image into timepoints.
+* 20230310: Used geopandas to trace cells over time by position.
+* 20230307: Setting up my environment to handle ipynb and python markdown.
+
+# Introduction
+
+Jacques is seeking to segment and follow cells over time.
+
+Steps performed so far:
+
+1.  Python/venv installation of fiji
+2.  Figured out some easy interactions between python and actual image data.
+3.  Implemented a simple function to find minimum distances between
+    putative cells using the extant methods.
+
+# Next steps
+
+1.  Note that the czi images are immediately openable via fiji's bioformat interface.
+2.  Load dataset via fiji
+3.  Invoke cellpose via the python interface (same as pyimagej)
+4.  Save ROIs produced by cellpose, save them to zip output file
+  a.  The roi interface in fiji can address these
+5.  Currently a macro is invoked which performs a set of measurements
+    on every ROI and saves them to a csv.  This creates the primary
+    data structure used for all following processes.
+6.  Need to create a datastructure which identifies each individual
+    cell over time given these ROIs which x/y/time(frame) along with
+    the measurements of interest (area/mean/stdev/intensities by
+    color).
+    a.  Small postprocessing details: the intensity values produced
+    must be normalized by cell area.
+
+# Demonstrate the first couple of steps using an actual dataset
+
+Jacques sent me an image acquired from the microscope and I saved it
+as 'test_data/raw.tif', he also sent me a cellpose model which I saved
+to the 'models/' directory.
+
+Given these as a starting point, let us try to open the image with a
+fiji instance and split it into a series of smaller files by
+timepoint.
+
+# Implementation notes
+
+I have been primarily using this as a way to refresh my brain on
+python and get current on best practices.  Thus, there are decisions I
+made in this workbook which do not make sense in any other context:
+e.g. why would anyone have the primary data structure be a dictionary
+keyed by filename, that is dumb?  I chose to do that to refresh myself
+on playing with dictionaries.  By the same token, why would anyone
+make a dictionary of dataframes only to turn around and concatenate
+them for usage in geopandas, that is crazy?  I did this to get more
+comfortable with pandas and get out some of my Rish muscle memory.
+
+With that in mind, if we choose to make this a package, the first
+thing that will need to happen is to rework the base datastructure.  I
+just want anyone who actually reads this code to know that yes, I am a
+nutter, but a nutter for a reason.
+
+# Load necessary python modules
+
+I am hoping to figure out how to load my package and have it handle all the initialization.
+It is not clear yet to me if I can import fiji_tracker and get access to the various imports it
+performs.  I am reasonably certain this is possible, but that I have not figured
+out the correct syntax.
+
+```{python load}
+from fiji_tracker.fiji_tracker.tracker import *
+
+from cellpose import models, io
+from cellpose.io import *
+from collections import defaultdict
+import geopandas
+import glob
+import imagej
+from jpype import JArray, JInt
+import matplotlib.pyplot as plt
+import multiprocessing as mp
+import numpy as np
+import os
+import pandas
+from pandas import DataFrame
+from pathlib import Path
+import scyjava
+import seaborn
+import shutil
+
+base_dir = Path('/lab/scratch/atb/imaging/mtb_2023').as_posix()
+os.chdir(base_dir)
+input_file = Path(f"{base_dir}/test_data/Experiment-1568.czi").as_posix()
+pandas.set_option('display.max_columns', None)
+verbose = True
+```
+
+```{python start_fiji}
+start_dir = os.getcwd()
+mem = '-Xmx64g'
+location = 'venv/bin/Fiji.app'
+mode = 'interactive'
+
+ij, raw_image, imp = start_fiji(base=start_dir, mem=mem, location=location, mode=mode,
+                                input_file=input_file)
+```
+
+# Separate slices
+
+Note to self, Jacques' new dataset uses wanted_z == 2, wanted_channel == 3.
+
+```{python run_separate_slices}
+raw_dataset, saved_slices, output_directory = separate_slices(input_file, ij, wanted_z = 2,
+                                                              wanted_channel = 3)
+```
+
+# Invoke cellpose
+
+```{python run_invoke_cellpose}
+output_files = invoke_cellpose(output_directory, 'models/CP_20220523_104016')
+
+moved = move_cellpose_output(output_files)
+```
+
+# Collapse Z
+
+One possible change is to perform measurements on the sum of Z-stacks
+instead of a single slice.  Thus we would sum the cells, create the
+ROIs using the single slice grayscale image, then measure the set of
+all combined.
+
+```{python run_collapse_z}
+output_files = collapse_z(raw_dataset, output_files)
+```
+
+# Create Regions of interest from cellpose outputs
+
+In Jacques notebook, it looks like he only extracts ROIs from one of
+the cellpose slices.  I am assuming the goal is to extend this across
+all images?
+
+There is an important caveat that I missed: imagej comes with a
+python2-based scripting language from which it appears some of his
+code is coming.  As a result I should look carefully before using it,
+and pay close attention to the examples provided here for the most
+appropriate ways of interacting with the ROI manager etc:
+
+https://github.com/imagej/pyimagej/blob/main/doc/examples/blob_detection_interactive.py
+
+```{python invoke_slice_to_roi}
+slice_measurements = slices_to_roi_measurements(output_files, ij, collapsed = True)
+```
+
+## Separate the logic of the above function
+
+slices_to_roi_measurements() does a few things in one for loop:
+
+1.  It creates polygons from the cellpose outputs.
+2.  It adds them to the ROI manager
+3.  It performs a measurement of them.
+
+There are other tasks which Jacques would like to perform on the various cellpose polygons, thus
+we really need to separate the functions which create and save the ROIs from those
+which measure them.
+
+In addition, I think we really want to have the raw data open and add the ROIs to it.
+
+```{python roi_updater, eval=FALSE}
+updated = create_cellpose_rois(output_files, ij, raw_image, imp, collapsed=True)
+```
+
+# Test create_cellpose_rois()
+
+The following block was used to try and get create_cellpose_rois working properly.
+
+It is therefore a bit of a mess.
+
+```{python testme, eval=FALSE}
+from fiji_tracker.fiji_tracker.tracker import *
+
+from cellpose import models, io
+from cellpose.io import *
+from collections import defaultdict
+import geopandas
+import glob
+import imagej
+from jpype import JArray, JInt
+from math import isnan
+import matplotlib.pyplot as plt
+import multiprocessing as mp
+import numpy as np
+import os
+import pandas
+from pandas import DataFrame
+from pathlib import Path
+import scyjava
+import seaborn
+import shutil
+
+base_dir = Path('/lab/scratch/atb/imaging/mtb_2023').as_posix()
+os.chdir(base_dir)
+input_file = Path(f"{base_dir}/test_data/Experiment-1568.czi").as_posix()
+pandas.set_option('display.max_columns', None)
+verbose = True
+
+
+collapsed = False
+verbose = True
+delete = False
+max_frames = 2
+
+start_dir = os.getcwd()
+mem = '-Xmx64g'
+location = 'venv/bin/Fiji.app'
+mode = 'interactive'
+
+ij, raw_image, imp = start_fiji(base=start_dir, mem=mem, location=location, mode=mode,
+                                input_file=input_file)
+raw_dataset, saved_slices, output_directory = separate_slices(input_file, ij, wanted_z = 2,
+                                                              wanted_channel = 3)
+output_files = invoke_cellpose(output_directory, 'models/CP_20220523_104016')
+
+## Cheating here to get around my for loop
+cellpose_slices = list(output_files.keys())[0]
+
+data_info = {}
+for element in range(len(raw_image.dims)):
+    name = raw_image.dims[element]
+    data_info[name] = raw_image.shape[element]
+num_times = data_info['Time'] + 1
+num_channels = data_info['Channel']
+num_z = data_info['Z']
+
+Overlay = scyjava.jimport('ij.gui.Overlay')
+ov = Overlay()
+rm = ij.RoiManager.getRoiManager()
+rm.runCommand("Associated", "true")
+#rm.runCommand("show All with labels")
+slice_directory = ''
+print("Starting to iterate over times.")
+
+max_frames = 5
+for timepoint in range(1, num_times):
+    frame_number = timepoint - 1 ## I used 0-indexed for the frames.
+    if (timepoint > max_frames):
+        print("Stopping while debugging.")
+        break
+    print(f"Going to time: {timepoint}")
+    imp.setT(timepoint)
+    slice_name = f"frame_{frame_number}"
+    input_tif = output_files[slice_name]['input_file']
+    slice_directory_name = os.path.basename(os.path.dirname(os.path.dirname(input_tif)))
+    input_txt = output_files[slice_name]['output_txt']
+    input_mask = output_files[slice_name]['output_mask']
+    ## The logic for this was taken from:
+    ## https://stackoverflow.com/questions/73849418/is-there-any-way-to-switch-imagej-macro-code-to-python3-code
+    txt_fh = open(input_txt, 'r')
+    roi_stats = defaultdict(list)
+    frame_xcoords = []
+    frame_ycoords = []
+    coords_length = []
+    ## Now get the slice for this timepoint from the raw data
+    seleced = []
+    line_count = 0
+    max_lines = 5
+    for line in txt_fh:
+        line_count = line_count + 1
+        if (line_count > max_lines):
+            break
+        xy = line.rstrip().split(",")
+        xy_coords = [int(element) for element in xy if element not in '']
+        x_coords = [int(element) for element in xy[::2] if element not in '']
+        y_coords = [int(element) for element in xy[1::2] if element not in '']
+        xcoords_jint = JArray(JInt)(x_coords)
+        ycoords_jint = JArray(JInt)(y_coords)
+        polygon_roi_instance = scyjava.jimport('ij.gui.PolygonRoi')
+        roi_instance = scyjava.jimport('ij.gui.Roi')
+        imported_polygon = polygon_roi_instance(xcoords_jint, ycoords_jint,
+                                                    len(x_coords), int(roi_instance.POLYGON))
+        imp.setRoi(imported_polygon)
+        added = rm.addRoi(imported_polygon)
+        ## Get the current number of ROIs, 1 indexed.
+        roi_count = rm.getCount()
+        roi_zero_idx = roi_count - 1
+        rm.select(roi_zero_idx)
+        imp.setT(timepoint)
+        updated2 = rm.runCommand("Update")
+        print(f"Finished {timepoint}")
+    txt_fh.close()
+imp.show()
+roizipname = "testROIs.zip"
+roizippath = os.path.join(roizipname)
+roi_index = JArray(JInt)(range(0, rm.getCount()))
+rm.setSelectedIndexes(roi_index)
+rm.runCommand('Save', roizippath)
+
+
+
+## Note to self, when selecting ROIs for updating, one must do so one
+## at a time, lest the window selection be lost and thus not be able
+## to perform the update and save the ROI set.
+## Similarly one may not use Select All for measurement
+## but you can do 'Select' '0,1,2,3...n' followed by 'Measure'.
+```
+
+# Convert the slice measurements to pandas df
+
+slices_to_roi_measurements() returns a dictionary with keys which are
+the filenames of each raw tif file.  Each element of that dictionary
+is in turn a dictionary containing some information about the files
+along with a df of the measurements provided by imagej.
+
+My little geopandas function assumes a single long df with some
+columns which tell it which timepoint.  So lets make a quick function
+to give that here.  OTOH it may be wiser/better to make some changes
+to slices_to_roi_measurements() so that it returns that format df; but
+since I am using this as a learning experience to get more comfortable
+with python data structures, I will not do it that way.
+
+```{python invoke_convert_pandas}
+concatenated = convert_slices_to_pandas(slice_measurements)
+```
+
+# Find nearest
+
+```{python invoke_nearest_cells}
+nearest, paired, pairwise_distances = nearest_cells_over_time(
+    concatenated, x_column = 'X', y_column = 'Y')
+```
+
+# Test nearest_cells_over_time()
+
+In a similar fashion, Jacques showed that there is a problem with how
+sjoin_nearest() is defining the closest cells with respect to time.  I
+am therefore putting the body of that function into the following
+block in order to figure out what is going wrong and ideally fix it.
+
+```{python test_nearest_cells_over_time, eval=FALSE}
+df = concatenated
+max_dist = 80.0
+x_column = 'X'
+y_column = 'Y'
+
+## One idea which might be interesting: add frame/Z here
+gdf = geopandas.GeoDataFrame(
+    df, geometry=geopandas.points_from_xy(df[x_column], df[y_column]))
+gdf.head()  ## We start with frame 0
+gdf.tail()  ## and end with 120.
+
+final_time = gdf.Frame.max()
+pairwise_distances = []
+for start_time in range(0, final_time):
+    i = start_time
+    j = i + 1
+    ti_idx = gdf.Frame == i
+    tj_idx = gdf.Frame == j
+    if verbose:
+        print(f"Getting distances of dfs {i} and {j}.")
+    ti = gdf[ti_idx]
+    tj = gdf[tj_idx]
+    ti_rows = ti.shape[0]
+    tj_rows = tj.shape[0]
+    for ti_row in range(0, ti_rows):
+        ti_element = ti.iloc[[ti_row, ]]
+        titj = geopandas.sjoin_nearest(ti_element, tj, distance_col="pairwise_dist",
+                                       max_distance=max_dist)
+        chosen_closest_dist = titj.pairwise_dist.min()
+        if (isnan(chosen_closest_dist)):
+            print(f"This element has no neighbor within {max_dist}.")
+        else:
+            chosen_closest_cell = titj.pairwise_dist == chosen_closest_dist
+            chosen_closest_row = titj[chosen_closest_cell]
+            pairwise_distances.append(chosen_closest_row)
+
+paired = pandas.concat(pairwise_distances)
+id_counter = 0
+## Cell IDs pointing to a list of cells
+traced = {}
+## Endpoints pointing to the cell IDs
+ends = {}
+for i in range(0, final_time - 1):
+    query_idx = paired.Frame_left == i
+    query = paired[query_idx]
+    for row in query.itertuples():
+        start_cell = row.Index
+        end_cell = row.index_right
+        if start_cell in ends.keys():
+            cell_id = ends[start_cell]
+            current_value = traced[cell_id]
+            current_value.append(end_cell)
+            traced[cell_id] = current_value
+            ends[end_cell] = cell_id
+        else:
+            id_counter = id_counter + 1
+            traced[id_counter] = [start_cell, end_cell]
+            ends[end_cell] = id_counter
+## return traced paired pairwise_distances
+```
+
+## Get information from a group of cells
+
+As a final step, we should be able to extract and play with the
+information from one or more groups of cells.
+
+```{python get_info}
+cell_id = 2
+cell_idx = nearest[cell_id]
+cell_data = concatenated.loc[cell_idx]
+len(cell_data)
+cell_data = cell_data.reset_index()
+
+scatter = plt.scatter(cell_data['X'], cell_data['Y'])
+final_row = cell_data.index.max()
+for start_time in range(0, final_row - 1):
+    ti_idx = cell_data.index == start_time
+    tj_idx = cell_data.index == start_time + 1
+    p1x = cell_data[ti_idx].X
+    p2x = cell_data[tj_idx].X
+    p1y = cell_data[ti_idx].Y
+    p2y = cell_data[tj_idx].Y
+    x_points = [p1x, p2x]
+    y_points = [p1y, p2y]
+    plt.plot(x_points, y_points)
+finalm1_idx = cell_data.index == final_row - 1
+final_idx = cell_data.index == final_row
+finalm1_x = cell_data[finalm1_idx].X
+final_x = cell_data[final_idx].X
+finalm1_y = cell_data[finalm1_idx].Y
+final_y = cell_data[final_idx].Y
+x_points = [finalm1_x, final_x]
+y_points = [finalm1_y, final_y]
+plt.plot(x_points, y_points)
+plt.show()
+
+seaborn.violinplot(data = cell_data.Area)
+plt.show()
+```
+
+
+
+```{r saveme}
+pander::pander(sessionInfo())
+message(paste0("This is hpgltools commit: ", get_git_commit()))
+```
