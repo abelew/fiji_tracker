@@ -17,7 +17,8 @@ import scyjava
 import seaborn
 import shutil
 
-def collapse_z(raw_dataset, output_files, method='sum', verbose=True):
+
+def collapse_z(raw_dataset, output_files, ij, method='sum', verbose=True):
     """Stack multiple z slices for each timepoint.
 
     If I understand Jacques' explanation of the quantification methods
@@ -26,6 +27,7 @@ def collapse_z(raw_dataset, output_files, method='sum', verbose=True):
     that and sends the stacked slices to the output directory and adds
     the filenames to the output_files dictionary.
     """
+    ZProjector = scyjava.jimport("ij.plugin.ZProjector")()
     cellpose_slices = list(output_files.keys())
     slice_number = 0
     collapsed_slices = []
@@ -149,16 +151,16 @@ def create_cellpose_rois(output_files, ij, raw_image, imp, collapsed=False, verb
     return output_files
 
 
-## Relevant options:
-## batch_size(increase for more parallelization), channels(two element list of two element
-## channels to segment; the first is the segment, second is optional nucleus;
-## internal elements are color channels to query, so [[0,0],[2,3]] means do main cells in
-## grayscale and a second with cells in blue, nuclei in green.
-## channel_axis, z_axis ? invert (T/F flip pixels from b/w I assume),
-## normalize(T/F percentile normalize the data), diameter, do_3d,
-## anisotropy (rescaling factor for 3d segmentation), net_avg (average models),
-## augment ?, tile ?, resample, interp, flow_threshold, cellprob_threshold (interesting),
-## min_size (turned off with -1), stitch_threshold ?, rescale ?.
+# Relevant options:
+# batch_size(increase for more parallelization), channels(two element list of two element
+# channels to segment; the first is the segment, second is optional nucleus;
+# internal elements are color channels to query, so [[0,0],[2,3]] means do main cells in
+# grayscale and a second with cells in blue, nuclei in green.
+# channel_axis, z_axis ? invert (T/F flip pixels from b/w I assume),
+# normalize(T/F percentile normalize the data), diameter, do_3d,
+# anisotropy (rescaling factor for 3d segmentation), net_avg (average models),
+# augment ?, tile ?, resample, interp, flow_threshold, cellprob_threshold (interesting),
+# min_size (turned off with -1), stitch_threshold ?, rescale ?.
 def invoke_cellpose(input_directory, model_file, channels=[[0, 0]], diameter=160,
                     threshold=0.4, do_3D=False, batch_size=64, verbose=True, gpu=False):
     """Invoke cellpose using individual slices.
@@ -168,8 +170,8 @@ def invoke_cellpose(input_directory, model_file, channels=[[0, 0]], diameter=160
     is the primary datastructure for the various functions which follow.
     """
 
-    ## Relevant options:
-    ## model_type(cyto, nuclei, cyto2), net_avg(T/F if load built in networks and average them)
+    # Relevant options:
+    # model_type(cyto, nuclei, cyto2), net_avg(T/F if load built in networks and average them)
     model = models.CellposeModel(gpu=gpu, pretrained_model=model_file)
     slice_directory = Path(f"{input_directory}/slices").as_posix()
     files = get_image_files(slice_directory, '_masks', look_one_level_down=False)
@@ -235,7 +237,7 @@ def move_cellpose_output(output_files, verbose=False):
                                     output_files[f_name]['output_txt'])
 
 
-def nearest_cells_over_time(df, max_dist=100.0, max_prop=None, x_column='X',
+def nearest_cells_over_time(df, max_dist=200.0, max_prop=None, x_column='X',
                             y_column='Y', verbose=True):
     """Trace cells over time
 
@@ -285,12 +287,35 @@ def nearest_cells_over_time(df, max_dist=100.0, max_prop=None, x_column='X',
     traced = {}
     ## Endpoints pointing to the cell IDs
     ends = {}
-    for i in range(0, final_time - 1):
+
+    traced_ids = {}
+    cellids_to_startid = {}
+    for i in range(0, final_time):
         query_idx = paired.Frame_left == i
         query = paired[query_idx]
         for row in query.itertuples():
             start_cell = row.Index
+            start_cellid = row.cell_id_left
             end_cell = row.index_right
+            end_cellid = row.cell_id_right
+
+            ## If the current cell ID maps to a starting point, then
+            ## add the new endpoint to the traced_ids with that starting cell.
+            ## Then add another key to cellids_to_startid with the new endpoint.
+            if start_cellid in cellids_to_startid:
+                parent = cellids_to_startid[start_cellid]
+                current_id_list = traced_ids[parent]
+                current_id_list.append(end_cellid)
+                traced_ids[parent] = current_id_list
+                cellids_to_startid[end_cellid] = parent
+            else:
+                ## If there is no current ID mapping, create one.
+                parent = start_cellid
+                cellids_to_startid[end_cellid] = parent
+                cellids_to_startid[parent] = parent
+                traced_ids[parent] = [parent, end_cellid]
+
+
             if start_cell in ends.keys():
                 cell_id = ends[start_cell]
                 current_value = traced[cell_id]
@@ -301,7 +326,7 @@ def nearest_cells_over_time(df, max_dist=100.0, max_prop=None, x_column='X',
                 id_counter = id_counter + 1
                 traced[id_counter] = [start_cell, end_cell]
                 ends[end_cell] = id_counter
-    return traced, paired, pairwise_distances
+    return traced, traced_ids, paired, pairwise_distances
 
 
 def separate_slices(input_file, ij, wanted_x=True, wanted_y=True, wanted_z=1,
@@ -365,7 +390,9 @@ def separate_slices(input_file, ij, wanted_x=True, wanted_y=True, wanted_z=1,
 ## an alternative method may be taken from:
 ## https://pyimagej.readthedocs.io/en/latest/Classic-Segmentation.html#segmentation-workflow-with-imagej2
 ## My goal is to pass the ROI regions to this function and create a similar df.
-def slices_to_roi_measurements(cellpose_result, ij, collapsed=False, verbose=True):
+def slices_to_roi_measurements(cellpose_result, ij, raw_image, imp,
+                               collapsed=False, verbose=True, view_channel=4,
+                               view_z=10, stop_after=None):
     """Read the text cellpose output files, generate ROIs, and measure.
 
     I think there are better ways of accomplishing this task than
@@ -381,36 +408,55 @@ def slices_to_roi_measurements(cellpose_result, ij, collapsed=False, verbose=Tru
     LabelRegions = scyjava.jimport('net.imglib2.roi.labeling.LabelRegions')
     ZProjector = scyjava.jimport('ij.plugin.ZProjector')()
     ov = Overlay()
+    rm = ij.RoiManager.getRoiManager()
+    rm.runCommand("Associated", "true")
+    imp.resetDisplayRanges()
+    ij.py.run_macro('resetMinAndMax();')
 
     output_dict = cellpose_result
     cellpose_slices = list(cellpose_result.keys())
     slice_number = 0
+    roi_index = 0
     for slice_name in cellpose_slices:
         output_dict[slice_name]['slice_number'] = slice_number
+        ## I am not sure if time is 0 or 1 indexed.
+        timepoint = slice_number + 1
+        print(f"Looking at slice: {slice_number} which is time: {timepoint}")
+        imp.setT(timepoint)
+        if (view_channel):
+            imp.setC(view_channel)
+        if (view_z):
+            imp.setZ(view_z)
+
+        if (stop_after is not None) and (stop_after > timepoint):
+            break
         input_tif = ''
-        if collapsed:
-            input_tif = cellpose_result[slice_name]['collapsed_file']
-        else:
-            input_tif = cellpose_result[slice_name]['input_file']
-        slice_dataset = ij.io().open(input_tif)
-        slice_data = ij.py.to_imageplus(slice_dataset)
+        #if collapsed:
+        #    input_tif = cellpose_result[slice_name]['collapsed_file']
+        #else:
+        #    input_tif = cellpose_result[slice_name]['input_file']
+        #slice_dataset = ij.io().open(input_tif)
+        #slice_data = ij.py.to_imageplus(slice_dataset)
+
         input_txt = cellpose_result[slice_name]['output_txt']
         input_mask = cellpose_result[slice_name]['output_mask']
         if verbose:
             print(f"Processing cellpose outline: {input_txt}")
             print(f"Measuring: {input_tif}")
         # convert Dataset to ImagePlus
-        imp = ij.py.to_imageplus(slice_data)
-        rm = ij.RoiManager.getRoiManager()
-        rm.runCommand("Associated", "true")
-        rm.runCommand("show All with labels")
+        ## Added by ATB 20230712, maybe incorrect.
         ## The logic for this was taken from:
         ## https://stackoverflow.com/questions/73849418/is-there-any-way-to-switch-imagej-macro-code-to-python3-code
-        txt_fh = open(input_txt, 'r')
+
+        ## Set up the measurement parameters
         set_string = f'Set Measurements...'
         measure_string = f'area mean min centroid median skewness kurtosis integrated stack redirect=None decimal=3'
-        ij.IJ.run(set_string, measure_string)
+        measure_setup = ij.IJ.run(set_string, measure_string)
+
+        txt_fh = open(input_txt, 'r')
         roi_stats = defaultdict(list)
+        slice_element = 0
+        slice_roi_names = []
         for line in txt_fh:
             xy = line.rstrip().split(",")
             xy_coords = [int(element) for element in xy if element not in '']
@@ -423,30 +469,47 @@ def slices_to_roi_measurements(cellpose_result, ij, collapsed=False, verbose=Tru
             imported_polygon = polygon_roi_instance(
                 xcoords_jint, ycoords_jint, len(x_coords), int(roi_instance.POLYGON)
             )
+            roi_name = f"t{slice_number}_c{slice_element}"
+            slice_roi_names.append(roi_name)
             imp.setRoi(imported_polygon)
-            rm.addRoi(imported_polygon)
-            ij.IJ.run(imp, 'Measure', '')
-        ## rm.runCommand('Update')  ## I think the update command needs an open image to function.
+            added = rm.addRoi(imported_polygon)
+            current_index = rm.getCount() - 1
+            current_name = rm.getName(current_index)
+            renamed = rm.rename(current_index, roi_name)
+            selected = rm.select(current_index)
+            imp.setT(timepoint)
+            if (view_channel):
+                imp.setC(view_channel)
+            #if (view_z):
+            #    imp.setZ(view_z)
+            rm.runCommand("Update")
+            slice_element = slice_element + 1
+            roi_index = roi_index + 1
+            measured = ij.IJ.run(imp, 'Measure', '')
+            ## All ROIs for this frame have been measured, send the results back to a dataframe
+        txt_fh.close()
         slice_result = ij.ResultsTable.getResultsTable()
         slice_table = ij.convert().convert(
             slice_result, scyjava.jimport('org.scijava.table.Table')
         )
         slice_measurements = ij.py.from_java(slice_table)
+        slice_measurements['cell_id'] = slice_roi_names
         output_dict[slice_name]['measurements'] = slice_measurements
         ij.IJ.run('Clear Results')
-        txt_fh.close()
+        imp.show()
         imp.setOverlay(ov)
-        imp.getProcessor().resetMinAndMax()
         slice_number = slice_number + 1
+        ## All frames have been measured
+
     return output_dict
 
 
-def start_fiji(base=None, mem='-Xmx64g', location='venv/bin/Fiji.app', mode='interactive', input_file=None):
+def start_fiji(base=None, mem='-Xmx128g', location='venv/bin/Fiji.app',
+               mode='interactive', input_file=None):
     scyjava.config.add_option(mem)
     start_dir = os.getcwd()
     if base:
         start_dir = base
-    print(f"Where am I: {start_dir}")
     ij = imagej.init(Path(location), mode=mode)
     ij.getApp().getInfo(True)
     ij.ui().showUI()
@@ -459,4 +522,5 @@ def start_fiji(base=None, mem='-Xmx64g', location='venv/bin/Fiji.app', mode='int
         raw_image = ij.io().open(input_file)
         shown = ij.ui().show(raw_image)
         imp = ij.py.to_imageplus(raw_image)
+        imp.show()
     return ij, raw_image, imp
