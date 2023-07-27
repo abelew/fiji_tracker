@@ -129,7 +129,8 @@ seems that all the ROIs are getting set to the correct places, and
 associated with the appropriate times/etc.
 
 ```{python invoke_slice_to_roi}
-slice_measurements = slices_to_roi_measurements(output_files, ij, raw_image, imp, view_channel = 4, view_z = 2)
+slice_measurements = slices_to_roi_measurements(output_files, ij, raw_image, imp,
+                                                view_channel = 4, view_z = 2)
 ```
 
 # Send to pandas
@@ -147,11 +148,12 @@ concatenated.head()
 nearest, traced_ids, paired, pairwise_distances = nearest_cells_over_time(
     concatenated, x_column = 'X', y_column = 'Y')
 
-traced_ids
+for t in traced_ids:
+    print(f"{t}: {traced_ids[t]}")
 ```
 
-I manually checked the first 6 cells and they all look good!
+# Color them
 
-Jacques _just_ left and he asked if I would make explicit how to
-initialize the dictionaries in the code.  Now that I actually want to
-do it, I cannot remember which ones.
+```{python color_cells}
+no_result = add_overlays_to_groups(nearest, ij, imp)
+```
