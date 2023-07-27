@@ -25,15 +25,16 @@ def add_overlays_to_groups(nearest, ij, imp):
     rm.runCommand("Associated", "true")
     colors = ["black", "blue", "cyan", "green", "magenta",
               "orange", "red", "white", "yellow"]
-    cell_id = nearest.keys()
-    for i in cell_id :
-    cell_idx = nearest[i]
-    random_color = random.choice(colors)
-    for idx in cell_idx:
-        # Get the ROI from the ROI Manager
-        roi = rm.select(idx - 1)
-        overlay_command = f"Overlay.addSelection('{random_color}', 5);"
-        ij.py.run_macro(overlay_command)
+    cell_indexes = nearest.keys()
+    cell_names = traced_ids.keys()
+    for cell in cell_names:
+        cell_idx = traced_ids[cell]
+        random_color = random.choice(colors)
+        for cell_vs_time in cell_idx:
+            chosen_index = rm.getIndex(cell_vs_time)
+            roi = rm.select(chosen_index)
+            overlay_command = f"Overlay.addSelection('{random_color}', 5);"
+            ij.py.run_macro(overlay_command)
 
 
 def collapse_z(raw_dataset, output_files, ij, method='sum', verbose=True):
