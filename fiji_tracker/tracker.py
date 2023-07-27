@@ -13,9 +13,27 @@ import os
 import pandas
 from pandas import DataFrame
 from pathlib import Path
+import random
 import scyjava
 import seaborn
 import shutil
+
+def add_overlays_to_groups(nearest, ij, imp):
+    Overlay = scyjava.jimport('ij.gui.Overlay')
+    ov = Overlay()
+    rm = ij.RoiManager.getRoiManager()
+    rm.runCommand("Associated", "true")
+    colors = ["black", "blue", "cyan", "green", "magenta",
+              "orange", "red", "white", "yellow"]
+    cell_id = nearest.keys()
+    for i in cell_id :
+    cell_idx = nearest[i]
+    random_color = random.choice(colors)
+    for idx in cell_idx:
+        # Get the ROI from the ROI Manager
+        roi = rm.select(idx - 1)
+        overlay_command = f"Overlay.addSelection('{random_color}', 5);"
+        ij.py.run_macro(overlay_command)
 
 
 def collapse_z(raw_dataset, output_files, ij, method='sum', verbose=True):
@@ -88,7 +106,7 @@ def convert_slices_to_pandas(slices, verbose=False):
 
 
 def create_cellpose_rois(output_files, ij, raw_image, imp, collapsed=False, verbose=True,
-                         delete = False, max_frames = 3):
+                         delete=False, max_frames=3):
     """Read the text cellpose output files, generate ROIs."""
     cellpose_slices = list(output_files.keys())
     data_info = {}
