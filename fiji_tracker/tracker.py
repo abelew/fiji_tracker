@@ -546,8 +546,31 @@ def start_fiji(base=None, mem='-Xmx128g', location='venv/bin/Fiji.app',
         imp.show()
     return ij, raw_image, imp
 
+def write_cell_measurements(traced_ids, paired,
+                            output='cell_measurements.csv'):
+    cell_num = 0
+    for parent_cellid in traced_ids:
+        cell_group = traced_ids[parent_cellid]
+        for child_cell in cell_group:
+            data_idx = paired.cell_id_left == child_cell
+            new_row = paired[data_idx]
+            ## Move the parent, left, and right cell IDs to the beginning of the row.
+            new_row.insert(0, 'parent_cell', parent_cellid)
+            left_popped = new_row.pop('cell_id_left')
+            new_row.insert(1, 'cell_id_left', left_popped)
+            right_popped = new_row.pop('cell_id_right')
+            new_row.insert(2, 'cell_id_right', right_popped)
+            num_hits = sum(data_idx)
+            if (num_hits > 0):
+                cell_num = cell_num + 1
+                if (cell_num == 1):
+                    new_row.to_csv(output, mode='w', header=True)
+                else:
+                    new_row.to_csv(output, mode='a', header=False)
+    return cell_num
 
-def write_nearest_cellids(nearest, output="nearest.csv"):
+
+def write_nearest_cellids(nearest, output='nearest.csv'):
     with open(output, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         field_names = ['parent_cell_id', 'child_cell_ids']

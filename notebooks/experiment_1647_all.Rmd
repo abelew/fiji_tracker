@@ -154,5 +154,9 @@ for t in traced_ids:
     print(f"{t}: {traced_ids[t]}")
 #traced_ids
 
-written = write_nearest_cellids(nearest, output="nearest.csv")
+written = write_nearest_cellids(nearest, output='nearest.csv')
+
+measure_written = write_cell_measurements(traced_ids, paired,
+                                         output='cell_measurements.csv')
+print(f"Wrote the distances for {measure_written} parental cells.")
 ```
