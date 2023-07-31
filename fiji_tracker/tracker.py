@@ -1,6 +1,7 @@
 from cellpose import models, io
 from cellpose.io import *
 from collections import defaultdict
+import csv
 import geopandas
 import glob
 import imagej
@@ -18,7 +19,7 @@ import scyjava
 import seaborn
 import shutil
 
-def add_overlays_to_groups(nearest, ij, imp):
+def add_overlays_to_groups(nearest, traced_ids, ij, imp):
     Overlay = scyjava.jimport('ij.gui.Overlay')
     ov = Overlay()
     rm = ij.RoiManager.getRoiManager()
@@ -348,7 +349,8 @@ def nearest_cells_over_time(df, max_dist=200.0, max_prop=None, x_column='X',
     return traced, traced_ids, paired, pairwise_distances
 
 
-def separate_slices(input_file, ij, wanted_x=True, wanted_y=True, wanted_z=1,
+def separate_slices(input_file, ij, raw_image = None,
+                    wanted_x=True, wanted_y=True, wanted_z=1,
     wanted_channel=2, cpus=8, overwrite=False, verbose=True):
     """Slice an image in preparation for cellpose.
 
@@ -366,16 +368,16 @@ def separate_slices(input_file, ij, wanted_x=True, wanted_y=True, wanted_z=1,
     slice_directory = Path(f"{output_directory}/slices").as_posix()
     os.makedirs(output_directory, exist_ok=True)
     os.makedirs(slice_directory, exist_ok=True)
-    if verbose:
+    if (is.None(raw_image)):
         print("Starting to open the input file, this takes a moment.")
-    raw_dataset = ij.io().open(input_file)
+        raw_image = ij.io().open(input_file)
     if verbose:
         print(f"Opened input file, writing images to {output_directory}")
 
     data_info = {}
-    for element in range(len(raw_dataset.dims)):
-        name = raw_dataset.dims[element]
-        data_info[name] = raw_dataset.shape[element]
+    for element in range(len(raw_image.dims)):
+        name = raw_image.dims[element]
+        data_info[name] = raw_image.shape[element]
     if verbose:
         print(
             f"This dataset has dimensions: X:{data_info['X']}",
@@ -384,7 +386,7 @@ def separate_slices(input_file, ij, wanted_x=True, wanted_y=True, wanted_z=1,
 
     slices = []
     for timepoint in range(data_info['Time']):
-        wanted_slice = raw_dataset[:, :, wanted_channel, wanted_z, timepoint]
+        wanted_slice = raw_image[:, :, wanted_channel, wanted_z, timepoint]
         slice_data = ij.py.to_dataset(wanted_slice)
         output_filename = Path(f"{output_directory}/slices/frame_{timepoint}.tif").as_posix()
         if os.path.exists(output_filename):
@@ -543,3 +545,14 @@ def start_fiji(base=None, mem='-Xmx128g', location='venv/bin/Fiji.app',
         imp = ij.py.to_imageplus(raw_image)
         imp.show()
     return ij, raw_image, imp
+
+
+def write_nearest_cellids(nearest, output="nearest.csv"):
+    with open(output, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        field_names = ['parent_cell_id', 'child_cell_ids']
+        writer.writerow(field_names)
+        for near in nearest.keys():
+            value = nearest[near]
+            writer.writerow([near, value])
+    print(f"Wrote numeric cell IDs to the file: {output}.")
