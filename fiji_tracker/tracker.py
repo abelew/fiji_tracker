@@ -20,6 +20,11 @@ import seaborn
 import shutil
 
 def add_overlays_to_groups(nearest, traced_ids, ij, imp):
+    """Randomly color groups of cells.
+
+    This is Jacques' function.  It seeks to put a single-color outline
+    on each cell of a group.
+    """
     Overlay = scyjava.jimport('ij.gui.Overlay')
     ov = Overlay()
     rm = ij.RoiManager.getRoiManager()
@@ -527,6 +532,13 @@ def slices_to_roi_measurements(cellpose_result, ij, raw_image, imp,
 
 def start_fiji(base=None, mem='-Xmx128g', location='venv/bin/Fiji.app',
                mode='interactive', input_file=None):
+    """Start fiji with some default options and return the data structures of interest.
+
+    Depending on context, one might want access to a few different things provided
+    by fiji/pyimagej when starting up.  This function attempts to make the process
+    of starting the fiji instance and grabbing the ij, raw image data, and imageplus
+    data as easy as possible.
+    """
     scyjava.config.add_option(mem)
     start_dir = os.getcwd()
     if base:
@@ -548,6 +560,12 @@ def start_fiji(base=None, mem='-Xmx128g', location='venv/bin/Fiji.app',
 
 def write_cell_measurements(traced_ids, paired,
                             output='cell_measurements.csv'):
+    """Write cell-by-cell measurements to a csv file.
+
+    This uses the to_csv() function provided by pandas to write out the various metrics
+    produced by imageJ to a file in cell ID order.  The parental ID is first, followed by
+    the current cell, the next cell, then all other metrics.
+    """
     cell_num = 0
     for parent_cellid in traced_ids:
         cell_group = traced_ids[parent_cellid]
@@ -571,6 +589,10 @@ def write_cell_measurements(traced_ids, paired,
 
 
 def write_nearest_cellids(nearest, output='nearest.csv'):
+    """Write a csv file of cell IDs.
+
+    This uses the csv library to write out the cell IDs, one per line.
+    """
     with open(output, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         field_names = ['parent_cell_id', 'child_cell_ids']
