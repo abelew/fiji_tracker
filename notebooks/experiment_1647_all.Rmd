@@ -85,8 +85,6 @@ verbose = True
 Note, I renamed the smaller test input file to remove a space in the
 filename.
 
-
-
 ```{python start_fiji}
 start_dir = os.getcwd()
 mem = '-Xmx128g'
@@ -102,8 +100,8 @@ ij, raw_image, imp = start_fiji(base=start_dir, mem=mem, location=location, mode
 I am not sure if this dataset should focus on a specific channel/Z.
 
 ```{python run_separate_slices}
-raw_dataset, saved_slices, output_directory = separate_slices(input_file, ij, wanted_z = 2,
-                                                              wanted_channel = 3)
+raw_dataset, saved_slices, output_directory = separate_slices(
+    input_file, ij, raw_image = raw_image, wanted_z = 2, wanted_channel = 3)
 ```
 
 # Invoke cellpose
@@ -150,13 +148,11 @@ concatenated.head()
 nearest, traced_ids, paired, pairwise_distances = nearest_cells_over_time(
     concatenated, max_dist = 10.0, x_column = 'X', y_column = 'Y')
 
+add_overlays_to_groups(nearest, traced_ids, ij, imp)
+
 for t in traced_ids:
     print(f"{t}: {traced_ids[t]}")
 #traced_ids
+
+written = write_nearest_cellids(nearest, output="nearest.csv")
 ```
-
-I manually checked the first 6 cells and they all look good!
-
-Jacques _just_ left and he asked if I would make explicit how to
-initialize the dictionaries in the code.  Now that I actually want to
-do it, I cannot remember which ones.
