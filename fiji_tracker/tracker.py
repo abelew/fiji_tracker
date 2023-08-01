@@ -43,7 +43,44 @@ def add_overlays_to_groups(nearest, traced_ids, ij, imp):
             ij.py.run_macro(overlay_command)
 
 
-def collapse_z(raw_dataset, output_files, ij, method='sum', verbose=True):
+def collapse_z(raw_dataset, output_files, ij, method='sum all', wanted_channel=3, show=False):
+    """Drop the image down to a single Z.
+
+    Optionally, also drop to a single channel.
+    """
+    ZProjector = scyjava.jimport('ij.plugin.ZProjector')()
+    cellpose_slices = list(output_files.keys())
+    slice_name = cellpose_slices[0]
+    slice_directory = os.path.dirname(output_files[slice_name]['input_file'])
+    base_directory = os.path.dirname(slice_directory)
+    output_directory = Path(f"{base_directory}/collapsed")
+    os.makedirs(output_directory, exist_ok=True)
+    output_filename = Path(f"{output_directory}/z_projection.tiff").as_posix()
+    if os.path.exists(output_filename):
+        os.remove(output_filename)
+    if (wanted_channel is None):
+        imp = ij.py.to_imageplus(raw_dataset)
+    else:
+        data_info = {}
+        for element in range(len(raw_dataset.dims)):
+            name = raw_dataset.dims[element]
+            data_info[name] = raw_dataset.shape[element]
+        single_channel = raw_dataset[:, :, wanted_channel, :, :]
+        imp = ij.py.to_imageplus(single_channel)
+        imp.setDimensions(1, int(data_info['Z']), int(data_info['Time']))
+
+    z_projector_result = ZProjector.run(imp, method)
+    z_collapsed_image = ij.py.from_java(z_projector_result)
+    z_collapsed_dataset = ij.py.to_dataset(z_collapsed_image)
+    saved = ij.io().save(z_collapsed_dataset, output_filename)
+    if verbose:
+        print(f"Saving image {output_filename}.")
+    if show:
+        ij.ui().show(z_collapsed_dataset)
+    return z_collapsed_dataset, z_collapsed_image, output_filename
+
+
+def collapse_z_separate_time(raw_dataset, output_files, ij, method='sum', verbose=True):
     """Stack multiple z slices for each timepoint.
 
     If I understand Jacques' explanation of the quantification methods
@@ -170,6 +207,7 @@ def create_cellpose_rois(output_files, ij, raw_image, imp, collapsed=False, verb
     imp.show()
     roi_index = JArray(JInt)(range(0, rm.getCount()))
     rm.setSelectedIndexes(roi_index)
+    ## Note to self, add a variant of this save to the measure function.
     rm.runCommand('Save', f"{slice_directory_name}.zip")
     if delete:
         rm.runCommand('Delete')
@@ -354,9 +392,9 @@ def nearest_cells_over_time(df, max_dist=200.0, max_prop=None, x_column='X',
     return traced, traced_ids, paired, pairwise_distances
 
 
-def separate_slices(input_file, ij, raw_image = None,
+def separate_slices(input_file, ij, raw_image=None,
                     wanted_x=True, wanted_y=True, wanted_z=1,
-    wanted_channel=2, cpus=8, overwrite=False, verbose=True):
+                    wanted_channel=2, cpus=8, overwrite=False, verbose=True):
     """Slice an image in preparation for cellpose.
 
     Eventually this should be smart enough to handle arbitrary
@@ -373,7 +411,7 @@ def separate_slices(input_file, ij, raw_image = None,
     slice_directory = Path(f"{output_directory}/slices").as_posix()
     os.makedirs(output_directory, exist_ok=True)
     os.makedirs(slice_directory, exist_ok=True)
-    if (is.None(raw_image)):
+    if (raw_image is None):
         print("Starting to open the input file, this takes a moment.")
         raw_image = ij.io().open(input_file)
     if verbose:
@@ -408,7 +446,7 @@ def separate_slices(input_file, ij, raw_image = None,
                 print(f"Saving image {input_name}_{timepoint}.")
         slices.append(wanted_slice)
     print(f"Returning the output directory: {output_directory}")
-    return raw_dataset, slices, output_directory
+    return raw_image, slices, output_directory
 
 
 ## The following is from a mix of a couple of implementations I found:
@@ -416,7 +454,7 @@ def separate_slices(input_file, ij, raw_image = None,
 ## an alternative method may be taken from:
 ## https://pyimagej.readthedocs.io/en/latest/Classic-Segmentation.html#segmentation-workflow-with-imagej2
 ## My goal is to pass the ROI regions to this function and create a similar df.
-def slices_to_roi_measurements(cellpose_result, ij, raw_image, imp,
+def slices_to_roi_measurements(cellpose_result, ij, imp,
                                collapsed=False, verbose=True, view_channel=4,
                                view_z=10, stop_after=None):
     """Read the text cellpose output files, generate ROIs, and measure.
@@ -436,9 +474,14 @@ def slices_to_roi_measurements(cellpose_result, ij, raw_image, imp,
     ov = Overlay()
     rm = ij.RoiManager.getRoiManager()
     rm.runCommand("Associated", "true")
-    imp.resetDisplayRanges()
-    ij.py.run_macro('resetMinAndMax();')
+    dimensions = imp.getDimensions()
+    channels = ij.py.from_java(dimensions)[2]
+    if (channels > 1):
+        imp.resetDisplayRanges()
+    else:
+        imp.resetDisplayRange()
 
+    ij.py.run_macro('resetMinAndMax();')
     output_dict = cellpose_result
     cellpose_slices = list(cellpose_result.keys())
     slice_number = 0
@@ -526,7 +569,6 @@ def slices_to_roi_measurements(cellpose_result, ij, raw_image, imp,
         imp.setOverlay(ov)
         slice_number = slice_number + 1
         ## All frames have been measured
-
     return output_dict
 
 
@@ -557,6 +599,7 @@ def start_fiji(base=None, mem='-Xmx128g', location='venv/bin/Fiji.app',
         imp = ij.py.to_imageplus(raw_image)
         imp.show()
     return ij, raw_image, imp
+
 
 def write_cell_measurements(traced_ids, paired,
                             output='cell_measurements.csv'):
