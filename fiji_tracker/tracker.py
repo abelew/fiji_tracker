@@ -43,7 +43,8 @@ def add_overlays_to_groups(nearest, traced_ids, ij, imp):
             ij.py.run_macro(overlay_command)
 
 
-def collapse_z(raw_dataset, output_files, ij, method='sum all', wanted_channel=3, show=False):
+def collapse_z(raw_dataset, output_files, ij, method='sum all', wanted_channel=3,
+               show=False, verbose=False):
     """Drop the image down to a single Z.
 
     Optionally, also drop to a single channel.
@@ -77,7 +78,7 @@ def collapse_z(raw_dataset, output_files, ij, method='sum all', wanted_channel=3
         print(f"Saving image {output_filename}.")
     if show:
         ij.ui().show(z_collapsed_dataset)
-    return z_collapsed_dataset, z_collapsed_image, output_filename
+    return z_collapsed_dataset, z_collapsed_image, output_filename, imp
 
 
 def collapse_z_separate_time(raw_dataset, output_files, ij, method='sum', verbose=True):
@@ -456,7 +457,7 @@ def separate_slices(input_file, ij, raw_image=None,
 ## My goal is to pass the ROI regions to this function and create a similar df.
 def slices_to_roi_measurements(cellpose_result, ij, imp,
                                collapsed=False, verbose=True, view_channel=4,
-                               view_z=10, stop_after=None):
+                               view_z=10):
     """Read the text cellpose output files, generate ROIs, and measure.
 
     I think there are better ways of accomplishing this task than
@@ -496,32 +497,16 @@ def slices_to_roi_measurements(cellpose_result, ij, imp,
             imp.setC(view_channel)
         if (view_z):
             imp.setZ(view_z)
-
-        if (stop_after is not None) and (stop_after > timepoint):
-            break
         input_tif = ''
-        #if collapsed:
-        #    input_tif = cellpose_result[slice_name]['collapsed_file']
-        #else:
-        #    input_tif = cellpose_result[slice_name]['input_file']
-        #slice_dataset = ij.io().open(input_tif)
-        #slice_data = ij.py.to_imageplus(slice_dataset)
-
         input_txt = cellpose_result[slice_name]['output_txt']
         input_mask = cellpose_result[slice_name]['output_mask']
         if verbose:
             print(f"Processing cellpose outline: {input_txt}")
             print(f"Measuring: {input_tif}")
-        # convert Dataset to ImagePlus
-        ## Added by ATB 20230712, maybe incorrect.
-        ## The logic for this was taken from:
-        ## https://stackoverflow.com/questions/73849418/is-there-any-way-to-switch-imagej-macro-code-to-python3-code
-
         ## Set up the measurement parameters
         set_string = f'Set Measurements...'
         measure_string = f'area mean min centroid median skewness kurtosis integrated stack redirect=None decimal=3'
         measure_setup = ij.IJ.run(set_string, measure_string)
-
         txt_fh = open(input_txt, 'r')
         roi_stats = defaultdict(list)
         slice_element = 0

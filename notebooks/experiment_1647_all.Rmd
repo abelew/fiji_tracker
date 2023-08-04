@@ -129,8 +129,11 @@ seems that all the ROIs are getting set to the correct places, and
 associated with the appropriate times/etc.
 
 ```{python invoke_slice_to_roi}
-slice_measurements = slices_to_roi_measurements(output_files, ij, z_collapsed_image,
-                                                view_channel = 4, view_z = None)
+imp = ij.py.to_imageplus(z_collapsed)
+## I think I would like to have this function be smart enough to know
+## If the input is an imageplus or raw image and convert without intervention.
+slice_measurements = slices_to_roi_measurements(output_files, ij, imp,
+                                                view_channel=4, view_z=None, collapsed=True)
 ```
 
 # Send to pandas
