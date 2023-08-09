@@ -319,7 +319,6 @@ def nearest_cells_over_time(df, max_dist=200.0, max_prop=None, x_column='X',
     """
     gdf = geopandas.GeoDataFrame(
         df, geometry=geopandas.points_from_xy(df[x_column], df[y_column]))
-
     final_time = gdf.Frame.max()
     pairwise_distances = []
     for start_time in range(0, final_time):
