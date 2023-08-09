@@ -627,5 +627,6 @@ def write_nearest_cellids(nearest, output='nearest.csv'):
         writer.writerow(field_names)
         for near in nearest.keys():
             value = nearest[near]
+            ## cleaned = value.strip(']').strip(']')
             writer.writerow([near, value])
     print(f"Wrote numeric cell IDs to the file: {output}.")

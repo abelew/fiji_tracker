@@ -78,6 +78,7 @@ os.chdir(base_dir)
 input_file = Path(f"{base_dir}/test_data/Experiment-1647_split_scenes-01.czi").as_posix()
 pandas.set_option('display.max_columns', None)
 verbose = True
+
 ```
 
 # Start fiji
@@ -86,6 +87,7 @@ Note, I renamed the smaller test input file to remove a space in the
 filename.
 
 ```{python start_fiji}
+
 start_dir = os.getcwd()
 mem = '-Xmx128g'
 location = 'venv/bin/Fiji.app'
@@ -93,6 +95,7 @@ mode = 'interactive'
 
 ij, raw_image, imp = start_fiji(base=start_dir, mem=mem, location=location, mode=mode,
                                 input_file=input_file)
+
 ```
 
 # Separate slices
@@ -100,23 +103,33 @@ ij, raw_image, imp = start_fiji(base=start_dir, mem=mem, location=location, mode
 I am not sure if this dataset should focus on a specific channel/Z.
 
 ```{python run_separate_slices}
+
 raw_dataset, saved_slices, output_directory = separate_slices(
     input_file, ij, raw_image=raw_image, wanted_z=2, wanted_channel=3)
+
 ```
 
 # Invoke cellpose
 
 ```{python run_invoke_cellpose}
+
 output_files = invoke_cellpose(output_directory, 'models/CP_20220523_104016')
 moved = move_cellpose_output(output_files)
+
 ```
 
 # Collapse Z
 
-I am not sure this is required for this image.
+I am not sure this is required for this image.  Note, the collapse_z
+function has a parameter named 'wanted_channel' which defaults to '3'
+and may be changed to specify the correct channel of interest.
 
 ```{python run_collapse_z}
-z_collapsed, z_collapsed_image, output_file, imp = collapse_z(raw_dataset, output_files, ij)
+
+z_collapsed, z_collapsed_image, output_file, imp = collapse_z(raw_dataset, output_files, ij,
+                                                              method='sum all',
+                                                              wanted_channel=3)
+
 ```
 
 # Make measurements
@@ -129,137 +142,97 @@ seems that all the ROIs are getting set to the correct places, and
 associated with the appropriate times/etc.
 
 ```{python invoke_slice_to_roi}
+
 imp = ij.py.to_imageplus(z_collapsed)
 ## I think I would like to have this function be smart enough to know
 ## If the input is an imageplus or raw image and convert without intervention.
 slice_measurements = slices_to_roi_measurements(output_files, ij, imp,
                                                 view_channel=4, view_z=None, collapsed=True)
+
 ```
 
 # Send to pandas
 
 ```{python pandas}
-concatenated = convert_slices_to_pandas(slice_measurements)
 
+concatenated = convert_slices_to_pandas(slice_measurements)
 concatenated.shape[0]
 concatenated.head()
+
 ```
 
 # Nearest cells
 
 ```{python nearest_cells}
+
 nearest, traced_ids, paired, pairwise_distances = nearest_cells_over_time(
-    concatenated, max_dist = 10.0, x_column = 'X', y_column = 'Y')
-
+    concatenated, max_dist = 100.0, x_column = 'X', y_column = 'Y')
 add_overlays_to_groups(nearest, traced_ids, ij, imp)
-
 for t in traced_ids:
     print(f"{t}: {traced_ids[t]}")
 #traced_ids
-
 written = write_nearest_cellids(nearest, output='nearest.csv')
-
 measure_written = write_cell_measurements(traced_ids, paired,
                                          output='cell_measurements.csv')
 print(f"Wrote the distances for {measure_written} parental cells.")
+
 ```
 
-```{python test_cellpose_rois}
-showPolygonRoi = scyjava.jimport('ij.gui.PolygonRoi')
-Overlay = scyjava.jimport('ij.gui.Overlay')
-Regions = scyjava.jimport('net.imglib2.roi.Regions')
-LabelRegions = scyjava.jimport('net.imglib2.roi.labeling.LabelRegions')
-ZProjector = scyjava.jimport('ij.plugin.ZProjector')()
-ov = Overlay()
-rm = ij.RoiManager.getRoiManager()
-rm.runCommand("Associated", "true")
-reset_range = imp.resetDisplayRanges()
-reset = ij.py.run_macro('resetMinAndMax();')
+An example of rereading the nearest csv, cleaning it up a little, and selecting ROIs with it.
+With a couple of caveats, I didn't define rm I think.
+This example will iterate over every cell in the csv file and pull
+them, which is a bit excessive and likely should be just used on a few
+cells of interest.
 
-output_dict = cellpose_result
-cellpose_slices = list(cellpose_result.keys())
-slice_number = 0
-roi_index = 0
-for slice_name in cellpose_slices:
-    output_dict[slice_name]['slice_number'] = slice_number
-    ## I am not sure if time is 0 or 1 indexed.
-    timepoint = slice_number + 1
-    print(f"Looking at slice: {slice_number} which is time: {timepoint}")
-    imp.setT(timepoint)
-    if (view_channel):
-        imp.setC(view_channel)
-    if (view_z):
-        imp.setZ(view_z)
-    input_tif = ''
-    #if collapsed:
-    #    input_tif = cellpose_result[slice_name]['collapsed_file']
-    #else:
-    #    input_tif = cellpose_result[slice_name]['input_file']
-    #slice_dataset = ij.io().open(input_tif)
-    #slice_data = ij.py.to_imageplus(slice_dataset)
+```{python reread_csv, eval=FALSE}
 
-    input_txt = cellpose_result[slice_name]['output_txt']
-    input_mask = cellpose_result[slice_name]['output_mask']
-    if verbose:
-        print(f"Processing cellpose outline: {input_txt}")
-        print(f"Measuring: {input_tif}")
-    # convert Dataset to ImagePlus
-    ## Added by ATB 20230712, maybe incorrect.
-    ## The logic for this was taken from:
-    ## https://stackoverflow.com/questions/73849418/is-there-any-way-to-switch-imagej-macro-code-to-python3-code
+testing = pandas.read_csv('nearest.csv')
+for row_number in range(len(testing)):
+    single_row = testing.iloc[row_number]
+    row_cellids = single_row.child_cell_ids
+    row_cleaned = row_cellids.strip('[').strip(']')
+    row_array = row_cleaned.split(', ')
+    for cell in row_array:
+        print(f"This row has cell: {cell}")
+        cell_index = int(cell)
+        roi = rm.select(cell_index)
 
-    ## Set up the measurement parameters
-    set_string = f'Set Measurements...'
-    measure_string = f'area mean min centroid median skewness kurtosis integrated stack redirect=None decimal=3'
-    measure_setup = ij.IJ.run(set_string, measure_string)
+```
 
-    txt_fh = open(input_txt, 'r')
-    roi_stats = defaultdict(list)
-    slice_element = 0
-    slice_roi_names = []
-    for line in txt_fh:
-        xy = line.rstrip().split(",")
-        xy_coords = [int(element) for element in xy if element not in '']
-        x_coords = [int(element) for element in xy[::2] if element not in '']
-        y_coords = [int(element) for element in xy[1::2] if element not in '']
-        xcoords_jint = JArray(JInt)(x_coords)
-        ycoords_jint = JArray(JInt)(y_coords)
-        polygon_roi_instance = scyjava.jimport('ij.gui.PolygonRoi')
-        roi_instance = scyjava.jimport('ij.gui.Roi')
-        imported_polygon = polygon_roi_instance(
-            xcoords_jint, ycoords_jint, len(x_coords), int(roi_instance.POLYGON)
-        )
-        roi_name = f"t{slice_number}_c{slice_element}"
-        slice_roi_names.append(roi_name)
-        imp.setRoi(imported_polygon)
-        added = rm.addRoi(imported_polygon)
-        current_index = rm.getCount() - 1
-        current_name = rm.getName(current_index)
-        renamed = rm.rename(current_index, roi_name)
-        selected = rm.select(current_index)
-        imp.setT(timepoint)
-        if (view_channel):
-            imp.setC(view_channel)
-        #if (view_z):
-        #    imp.setZ(view_z)
-        rm.runCommand("Update")
-        slice_element = slice_element + 1
-        roi_index = roi_index + 1
-        measured = ij.IJ.run(imp, 'Measure', '')
-        ## All ROIs for this frame have been measured, send the results back to a dataframe
-    txt_fh.close()
-    slice_result = ij.ResultsTable.getResultsTable()
-    slice_table = ij.convert().convert(
-        slice_result, scyjava.jimport('org.scijava.table.Table')
-    )
-    slice_measurements = ij.py.from_java(slice_table)
-    slice_measurements['cell_id'] = slice_roi_names
-    output_dict[slice_name]['measurements'] = slice_measurements
-    ij.IJ.run('Clear Results')
-    imp.show()
-    imp.setOverlay(ov)
-    slice_number = slice_number + 1
-    ## All frames have been measured
+# Cell trajectory?
 
+```{python cell_trajectory}
+
+cell_id = "t87_c11"
+cell_idx = nearest[cell_id]
+cell_data = pairwise_distances.loc[cell_idx]
+len(cell_data)
+cell_data = cell_data.reset_index()
+
+scatter = plt.scatter(cell_data['X'], cell_data['Y'])
+final_row = cell_data.index.max()
+for start_time in range(0, final_row - 1):
+    ti_idx = cell_data.index == start_time
+    tj_idx = cell_data.index == start_time + 1
+    p1x = cell_data[ti_idx].X
+    p2x = cell_data[tj_idx].X
+    p1y = cell_data[ti_idx].Y
+    p2y = cell_data[tj_idx].Y
+    x_points = [p1x, p2x]
+    y_points = [p1y, p2y]
+    plt.plot(x_points, y_points)
+finalm1_idx = cell_data.index == final_row - 1
+final_idx = cell_data.index == final_row
+finalm1_x = cell_data[finalm1_idx].X
+final_x = cell_data[final_idx].X
+finalm1_y = cell_data[finalm1_idx].Y
+final_y = cell_data[final_idx].Y
+x_points = [finalm1_x, final_x]
+y_points = [finalm1_y, final_y]
+plt.plot(x_points, y_points)
+plt.show()
+
+seaborn.violinplot(data = cell_data.Area)
+plt.show()
 
 ```
