@@ -1,5 +1,6 @@
 import pandas
 import geopandas
+from math import isnan
 
 
 def xref_locations(first, second, first_x='X', first_y='Y', first_z='Slice',
@@ -24,7 +25,7 @@ def xref_locations(first, second, first_x='X', first_y='Y', first_z='Slice',
         if verbose:
             print(f"On row: {ti_row}")
         ti_element = first_gdf.iloc[[ti_row, ]]
-        titj = geopandas.sjoin_nearest(first_gdf, second_gdf,
+        titj = geopandas.sjoin_nearest(ti_element, second_gdf,
                                        distance_col="pairwise_dist",
                                        max_distance=max_dist)
         chosen_closest_dist = titj.pairwise_dist.min()
@@ -35,5 +36,4 @@ def xref_locations(first, second, first_x='X', first_y='Y', first_z='Slice',
             chosen_closest_row = titj[chosen_closest_cell]
             pairwise_tmp = pandas.concat([pairwise_elements, chosen_closest_row])
             pairwise_elements = pairwise_tmp
-            print(pairwise_elements.shape)
     return pairwise_elements
