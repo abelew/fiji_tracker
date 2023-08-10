@@ -67,6 +67,7 @@ too many import statements will be required.
 
 ```{python load}
 from fiji_tracker.fiji_tracker.tracker import *
+from fiji_tracker.fiji_tracker.xref_tracks import *
 
 import os
 import pandas
@@ -84,7 +85,7 @@ verbose = True
 # Start fiji
 
 Note, I renamed the smaller test input file to remove a space in the
-filename.
+filename.  I am also explicitly telling fiji to run with 128G ram.
 
 ```{python start_fiji}
 
@@ -101,6 +102,20 @@ ij, raw_image, imp = start_fiji(base=start_dir, mem=mem, location=location, mode
 # Separate slices
 
 I am not sure if this dataset should focus on a specific channel/Z.
+With that caveat in mind, the following invocation takes the input
+file and fiji instance and does the following:
+
+1.  Checks to see if the various output files already exist.  If so,
+    it just produces a hash containing the various filenames that
+    should be available given these parameters.
+2.  If not, then it breaks up the input file by the chosen Z and
+    channel into one piece per every timepoint in the data.
+3.  As it is creating these files, it saves them to the subdirectory
+    'slices', which might be better named 'timepoints' and adds new
+    keys to the hash with those filenames.
+4.  Upon completion, it gives back 3 datastructures: the raw image
+    data, the list of slice data, and the path containing the
+    top-level directory of all the output files.
 
 ```{python run_separate_slices}
 
@@ -110,6 +125,29 @@ raw_dataset, saved_slices, output_directory = separate_slices(
 ```
 
 # Invoke cellpose
+
+Cellpose uses a provided model file and directory of input files along
+with some parameters in order to generate a new set of files which
+include text descriptions of the cell polygons (files ending in_cp_outlines.txt'),
+and the image data of the polygons (ending in _cp_masks.png).
+
+Cellpose has _many_ parameters which may be modified.  This function
+currently only fills in a few of them: channels defaults to [[0,0]],
+diameter defaults to 160, threshold to 0.4, do_3D is False, batch_size
+is 64, and gpu is False.
+
+Others which one may wish to include are:
+
+channel_axis, z_axis, invert, normalize, diameter, anisotropy,
+net_avg, augment, tile, resample, interp, flow_threshold,
+cellprob_threshold, min_size, stitch_threshold, and rescale.  Given
+that I know next to nothing about image processing, I have filled in none of
+them unless Jacques makes clear to me that they are important.
+
+The move_cellpose_output() function just puts the various output files
+into specific directories which match my scheme as opposed to where
+cellpose puts them.  Presumably that logic could be moved into
+invoke_cellpose().
 
 ```{python run_invoke_cellpose}
 
@@ -123,6 +161,22 @@ moved = move_cellpose_output(output_files)
 I am not sure this is required for this image.  Note, the collapse_z
 function has a parameter named 'wanted_channel' which defaults to '3'
 and may be changed to specify the correct channel of interest.
+
+The collapse_z() function uses the raw data, list of known output
+files from cellpose, and the active fiji instance; and invokes
+the imageJ plugin 'ZProjector' in order to collapse the data from
+every Z-slice into a single plane.  The default parameters it takes
+are method: 'sum all' and wanted_channel: 3.
+
+While running, it produces and dataset object of the collapsed data
+(z_collapsed in the following example), a imageJ image of same
+(z_collapsed_image), an output filename (ending in z_projection.tiff)
+to which the data was saved, and a modified imageplus instance that
+one may use in imageJ.  I think that these #1, #2, and #4 outputs are
+likely redundant and may be converted back and forth with little
+effort; however at this time, because of the difficulties I have had
+in understanding how ROIs are attached to objects in memory, I am
+keeping them all as separate variables for future tasks.
 
 ```{python run_collapse_z}
 
@@ -141,6 +195,34 @@ code, explicitly set the Z/C/Ts to 1-indexed values to start, and it
 seems that all the ROIs are getting set to the correct places, and
 associated with the appropriate times/etc.
 
+I think the imp returned in the previous stanza should be the correct
+input at this step.  But that does not seem to have been the case.  It
+is worth noting that it _definitely_ is the correct input when one
+does not perform a collapse operation...
+
+In any event, slices_to_roi_measurements() takes the various outputs,
+the imageJ instance, and imageplus data provided by the previous
+functions and does the following:
+
+1.  Iterates over every text file produced by cellpose.
+2.  Reads them and creates polygon ROIs from them which _should_ get
+    associated with the appropriately associated channel/Z/time
+    segment of the imageplus data(imp).
+3.  Once it has those polygons defined, invoke the measure function
+    with appropriate parameters to extract some useful information
+    from each individual cell as detected by cellpose.
+4.  bind the ROIs to the image so that one may go back and look at
+    them later.
+
+This function has a few options which change how it interacts with the
+data: collapsed so that it knows if this has been z-collapsed, view_z(10)
+to choose a specific Z-slice, and view_channel(4) to keep track of a
+specific channel.
+
+Upon completion it returns a modified copy of the output_files data
+with a new key 'measurements' containing, you guessed it, the various
+measurements from the generated, channel-specific, ROIs.
+
 ```{python invoke_slice_to_roi}
 
 imp = ij.py.to_imageplus(z_collapsed)
@@ -153,6 +235,11 @@ slice_measurements = slices_to_roi_measurements(output_files, ij, imp,
 
 # Send to pandas
 
+The dictionary produced by the previous stanza is not in a very useful
+format. The following block addresses that by extracting the
+measurements on a per-slice basis and adding them to a pandas
+dataframe so that we can play with the results.
+
 ```{python pandas}
 
 concatenated = convert_slices_to_pandas(slice_measurements)
@@ -162,6 +249,31 @@ concatenated.head()
 ```
 
 # Nearest cells
+
+Given the dataframe of measurements, nearest_cells_over_time()
+attempts to find the same cells from every timepoint a to a+1.  It
+does so by grabbing every individual measurement at time a and uses
+the sjoin_nearest() function from geopandas in order to find the
+closest cell in timepoint a+1.
+
+Along the way, it produces its results in a couple of different
+formats.  One of them is by ROI index (traced_ids), another is by ROI
+name(nearest).  In addition, it provides the dataframe of all the
+combined measurements(paired) so that one may check my work, and a
+datastructure of the merged pairs of timepoints(pairwise_distances)
+produced by sjoin_nearest().  Thus, paired and pairwise distances are
+pretty redundant and one of them should be removed.  I had them both
+initially because I was learning how to play with lists vs. dataframes
+in python...
+
+There is one more parameter in this function 'max_prop' which is
+intended as another quality-control filter; when enabled it will drop
+any cell pairs which change their area by a |proportion| >= max_prop.
+Thus, in theory no cell should change by more than (max_prop*100)%.
+
+The following block also shows a couple of ways to write csv files,
+another task I knew was super easy but did not know how to do in
+python.
 
 ```{python nearest_cells}
 
@@ -184,6 +296,8 @@ This example will iterate over every cell in the csv file and pull
 them, which is a bit excessive and likely should be just used on a few
 cells of interest.
 
+This is effectively the opposite of the writer in the previous block.
+
 ```{python reread_csv, eval=FALSE}
 
 testing = pandas.read_csv('nearest.csv')
@@ -199,7 +313,21 @@ for row_number in range(len(testing)):
 
 ```
 
+At this point, we have essentially translated the image data into a
+dataframe of coordinates/areas/etc along with a bunch of smaller image
+files and ROIs.
+
 # Cell trajectory?
+
+One of the rando things we can therefore do, is plot whatever aspects
+of the cells are interesting.  In the following block I chose the
+extract every measurement from an individually-detected cell 't87_c11'
+(e.g. this is the cell which started at timepoint 87 and was the 11th
+cell in that frame from cellpose).  I chose it arbitrarily because it
+seems to have a decent number of child cell objects.
+
+So, I iterate over the child-cells and yank out their positions and
+plot them, along with a violin plot of their areas.
 
 ```{python cell_trajectory}
 
@@ -233,6 +361,32 @@ plt.plot(x_points, y_points)
 plt.show()
 
 seaborn.violinplot(data = cell_data.Area)
+plt.show()
+
+```
+
+# Combining two pandas location dataframes via geopandas
+
+A somewhat different level of task: Jacques now has a series of data
+which describes the bacteria inside the cells.  In the following block
+I will attempt to use identical geopandas logic in order to reconcile
+the center of each bacteria and their measurements/x/y/slice
+information from imageJ.
+
+While I was at it, I had it plot a boxplot of the cell areas observed.
+
+```{python xref_pandas}
+
+import matplotlib.pyplot as plt
+pairwise = xref_locations('bacteria_tracks/cell_measurements.csv',
+                          'bacteria_tracks/exporttracks-1.csv',
+                          first_x='X', first_y='Y', first_z='Slice',
+                          second_x='POSITION_X', second_y='POSITION_Y',
+                          second_z='POSITION_Z', verbose=False)
+pairwise.head()
+pairwise.shape
+area_box = pairwise.boxplot(column='Area')
+area_box.plot()
 plt.show()
 
 ```
