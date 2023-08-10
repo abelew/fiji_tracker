@@ -67,7 +67,6 @@ too many import statements will be required.
 
 ```{python load}
 from fiji_tracker.fiji_tracker.tracker import *
-from fiji_tracker.fiji_tracker.xref_tracks import *
 
 import os
 import pandas
@@ -234,24 +233,6 @@ plt.plot(x_points, y_points)
 plt.show()
 
 seaborn.violinplot(data = cell_data.Area)
-plt.show()
-
-```
-
-# Combining two pandas location dataframes via geopandas
-
-```{python xref_pandas}
-
-import matplotlib.pyplot as plt
-pairwise = xref_locations('bacteria_tracks/cell_measurements.csv',
-                          'bacteria_tracks/exporttracks-1.csv',
-                          first_x='X', first_y='Y', first_z='Slice',
-                          second_x='POSITION_X', second_y='POSITION_Y',
-                          second_z='POSITION_Z', verbose=False)
-pairwise.head()
-pairwise.shape
-area_box = pairwise.boxplot(column='Area')
-area_box.plot()
 plt.show()
 
 ```
