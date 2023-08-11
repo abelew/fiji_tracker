@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fiji_tracker"
+version = "0.0.1"
+authors = [
+  { name="ashton trey belew", email="abelew@umd.edu" },
+]
+description = "Some methods to aid in tracking and quantifying cells."
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/abelew/fiji_tracker"
+"Bug Tracker" = "https://github.com/abelew/fiji_tracker/issues"

@@ -1,0 +1,10 @@
+LICENSE
+README.md
+pyproject.toml
+src/fiji_tracker/__init__.py
+src/fiji_tracker/tracker.py
+src/fiji_tracker/xref_tracks.py
+src/fiji_tracker.egg-info/PKG-INFO
+src/fiji_tracker.egg-info/SOURCES.txt
+src/fiji_tracker.egg-info/dependency_links.txt
+src/fiji_tracker.egg-info/top_level.txt

@@ -1,0 +1,22 @@
+Metadata-Version: 2.1
+Name: fiji-tracker
+Version: 0.0.1
+Summary: Some methods to aid in tracking and quantifying cells.
+Author-email: ashton trey belew <abelew@umd.edu>
+Project-URL: Homepage, https://github.com/abelew/fiji_tracker
+Project-URL: Bug Tracker, https://github.com/abelew/fiji_tracker/issues
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown
+License-File: LICENSE
+
+# Introduction
+
+fiji_tracker is a small package to track and quantify cells in fiji.
+This is a small project being used for me to refresh my thinking in python
+as well as assist Jacques Augenstreich with some of his work quantifying
+some of his really cool work which seeks to interrogate bacteria inside
+macrophages with respect to time.
+

@@ -51,6 +51,16 @@ library(spatstat.geom)
 library(reticulate)
 ```
 
+# Note
+
+I spent a little time last night reading:
+
+https://packaging.python.org/en/latest/tutorials/packaging-projects/
+
+and through it generated a somewhat more canonical python package from
+fiji_tracker.  As a result I hope soon to change how the various
+functions are loaded in this first block.
+
 # Introduction
 
 In this document I will attempt to test out the various ideas explored

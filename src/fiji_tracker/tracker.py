@@ -378,7 +378,6 @@ def nearest_cells_over_time(df, max_dist=200.0, max_prop=None, x_column='X',
                 cellids_to_startid[parent] = parent
                 traced_ids[parent] = [parent, end_cellid]
 
-
             if start_cell in ends.keys():
                 cell_id = ends[start_cell]
                 current_value = traced[cell_id]
